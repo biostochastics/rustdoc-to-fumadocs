@@ -158,17 +158,36 @@ export type StructKind =
   | { plain: { fields: Id[]; has_stripped_fields: boolean } };
 
 /**
- * Helper functions for handling StructKind format differences.
- * Format 56+ uses string "unit" instead of { unit: true }.
+ * Checks if a struct is a unit struct (no fields).
+ *
+ * Handles format version differences:
+ * - Format 56+: Uses string literal `"unit"`
+ * - Format 35-55: Uses object `{ unit: true }`
+ *
+ * @param kind - The struct kind to check
+ * @returns true if this is a unit struct
  */
-export function isUnitStruct(kind: StructKind): boolean {
+export function isUnitStruct(kind: StructKind): kind is "unit" | { unit: true } {
   return kind === "unit" || (typeof kind === "object" && "unit" in kind);
 }
 
+/**
+ * Type guard for tuple structs.
+ * Tuple structs contain an array of field IDs (null for stripped fields).
+ *
+ * @param kind - The struct kind to check
+ * @returns true if this is a tuple struct
+ */
 export function isTupleStruct(kind: StructKind): kind is { tuple: (Id | null)[] } {
   return typeof kind === "object" && "tuple" in kind;
 }
 
+/**
+ * Type guard for plain structs (structs with named fields).
+ *
+ * @param kind - The struct kind to check
+ * @returns true if this is a plain struct with named fields
+ */
 export function isPlainStruct(
   kind: StructKind
 ): kind is { plain: { fields: Id[]; has_stripped_fields: boolean } } {

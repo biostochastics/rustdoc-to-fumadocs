@@ -4,6 +4,24 @@ All notable changes to rustdoc-to-fumadocs will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Changed
+
+- **Improved error handling**: `generate()` now throws structured `RustdocError` with codes, hints, and context instead of raw `Error`
+- **Better warning messages**: Missing item references now include module context and show summary counts
+- **Refactored implementation filtering**: Split complex `getImplementations()` into focused helper methods for better maintainability
+- **Enhanced path sanitization**: Empty strings return `"unnamed"`, handles Unicode normalization, and truncates to filesystem limits (255 chars)
+- **Centralized kind ordering**: `KIND_ORDER` constant used consistently across module index and meta.json generation
+- **Improved type predicates**: Added proper JSDoc and type predicate return types for `isPlainVariant()`, `isUnitStruct()`, etc.
+
+### Fixed
+
+- **Silent skipping in processModule()**: Now warns when encountering non-module items with meaningful content
+- **Root module validation**: Uses string conversion for format 56+ numeric ID compatibility
+- **Field type fallback**: Returns `"unknown"` instead of `"..."` with warning for unexpected field structures
+- **CLI logger in JSON mode**: Structured logger pattern replaces empty function anti-pattern
+
 ## [0.2.0] - 2026-02-04
 
 ### Added

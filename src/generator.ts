@@ -17,9 +17,10 @@
  * ```
  */
 
-import { stringify as yamlStringify } from "yaml";
+import { stringify } from "yaml";
 import type { RustdocCrate, Item, ItemKind, Id, VariantKind, Type, Attribute } from "./types.js";
 import { getItemKind, isPlainStruct } from "./types.js";
+import { RustdocError, ErrorCode } from "./errors.js";
 
 /**
  * Maximum recursion depth for module processing.
@@ -34,31 +35,68 @@ const MAX_RECURSION_DEPTH = 100;
 const MAX_WARNINGS = 50;
 
 /**
+ * Centralized ordering of item kinds for consistent display across the generator.
+ * This order is used for table of contents, meta.json navigation, and kind-based grouping.
+ */
+const KIND_ORDER: readonly ItemKind[] = [
+  "struct",
+  "union",
+  "enum",
+  "trait",
+  "function",
+  "type_alias",
+  "constant",
+  "static",
+  "macro",
+] as const;
+
+/** Maximum filename length for most filesystems */
+const MAX_FILENAME_LENGTH = 255;
+
+/**
  * Sanitizes a path segment to prevent directory traversal attacks.
  * Removes or replaces dangerous characters that could escape the output directory.
  *
  * @param segment - A single path segment (filename or directory name)
- * @returns Sanitized segment safe for filesystem operations
+ * @returns Sanitized segment safe for filesystem operations, or "unnamed" for empty input
  *
  * @example
  * ```typescript
  * sanitizePath("../../../etc/passwd") // Returns "______etc_passwd"
  * sanitizePath("my_module") // Returns "my_module"
  * sanitizePath("my/nested/path") // Returns "my_nested_path"
+ * sanitizePath("") // Returns "unnamed"
  * ```
  */
 export function sanitizePath(segment: string): string {
-  if (!segment) return segment;
+  // Handle empty or whitespace-only segments
+  if (!segment || segment.trim() === "") {
+    return "unnamed";
+  }
 
-  // Replace path separators and parent directory references
-  return (
-    segment
-      .replace(/\.\./g, "_") // Prevent parent directory traversal
-      .replace(/[/\\]/g, "_") // Replace path separators
-      .replace(/^\.+/, "_") // Replace leading dots
-      // eslint-disable-next-line no-control-regex
-      .replace(/[<>:"|?*\x00-\x1f]/g, "_")
-  ); // Remove invalid filesystem characters
+  // Normalize Unicode and replace dangerous characters
+  let sanitized = segment
+    .normalize("NFC") // Unicode normalization for consistent handling
+    .replace(/\.\./g, "_") // Prevent parent directory traversal
+    .replace(/[/\\]/g, "_") // Replace path separators
+    .replace(/^\.+/, "_") // Replace leading dots
+    // eslint-disable-next-line no-control-regex
+    .replace(/[<>:"|?*\x00-\x1f]/g, "_"); // Remove invalid filesystem characters
+
+  // Truncate to filesystem limit while preserving extension if present
+  if (sanitized.length > MAX_FILENAME_LENGTH) {
+    const extIndex = sanitized.lastIndexOf(".");
+    if (extIndex > 0 && extIndex > sanitized.length - 10) {
+      // Has a short extension - preserve it
+      const ext = sanitized.slice(extIndex);
+      sanitized = sanitized.slice(0, MAX_FILENAME_LENGTH - ext.length) + ext;
+    } else {
+      // No extension or very long extension - just truncate
+      sanitized = sanitized.slice(0, MAX_FILENAME_LENGTH);
+    }
+  }
+
+  return sanitized;
 }
 import {
   formatType,
@@ -78,17 +116,41 @@ import {
 } from "./renderer/index.js";
 
 /**
- * Helper functions for handling VariantKind format differences.
- * Format 56+ uses string "plain" instead of { plain: true }.
+ * Checks if an enum variant is a plain/unit variant (no associated data).
+ *
+ * Handles format version differences:
+ * - Format 56+: Uses string literal `"plain"`
+ * - Format 35-55: Uses object `{ plain: true }`
+ *
+ * @param kind - The variant kind to check
+ * @returns true if this is a plain/unit variant
  */
-function isPlainVariant(kind: VariantKind): boolean {
-  return kind === "plain" || (typeof kind === "object" && "plain" in kind);
+function isPlainVariant(kind: VariantKind): kind is "plain" | { plain: true } {
+  // Format 56+: plain variant represented as string "plain"
+  if (kind === "plain") return true;
+  // Format 35-55: plain variant represented as object { plain: true }
+  if (typeof kind === "object" && "plain" in kind) return true;
+  return false;
 }
 
+/**
+ * Type guard for tuple enum variants.
+ * Tuple variants contain an array of field IDs (null for stripped fields).
+ *
+ * @param kind - The variant kind to check
+ * @returns true if this is a tuple variant
+ */
 function isTupleVariant(kind: VariantKind): kind is { tuple: (Id | null)[] } {
   return typeof kind === "object" && "tuple" in kind;
 }
 
+/**
+ * Type guard for struct enum variants.
+ * Struct variants contain named fields with their IDs.
+ *
+ * @param kind - The variant kind to check
+ * @returns true if this is a struct variant
+ */
 function isStructVariant(
   kind: VariantKind
 ): kind is { struct: { fields: Id[]; has_stripped_fields: boolean } } {
@@ -193,14 +255,25 @@ export class RustdocGenerator {
     }
   }
 
+  /** Maximum number of missing reference warnings to show verbosely */
+  private static readonly MAX_VERBOSE_MISSING_REFS = 5;
+
   /**
    * Track missing item references for summary reporting.
+   * Shows detailed warnings for the first few, then indicates more exist.
+   *
+   * @param childId - The ID of the missing item
+   * @param parentName - Optional name of the parent module for context
    */
   private warnMissingRef(childId: Id, parentName?: string): void {
     this.missingRefCount++;
-    // Only warn verbosely for the first few
-    if (this.missingRefCount <= 5) {
-      this.warn(`Missing item reference: ${childId}${parentName ? ` in ${parentName}` : ""}`);
+
+    const location = parentName ? ` in module "${parentName}"` : "";
+
+    if (this.missingRefCount <= RustdocGenerator.MAX_VERBOSE_MISSING_REFS) {
+      this.warn(`Missing item reference: ${String(childId)}${location}`);
+    } else if (this.missingRefCount === RustdocGenerator.MAX_VERBOSE_MISSING_REFS + 1) {
+      this.warn(`Additional missing references suppressed (total so far: ${this.missingRefCount})`);
     }
   }
 
@@ -226,13 +299,37 @@ export class RustdocGenerator {
 
   /**
    * Generate all MDX files from the rustdoc JSON.
+   *
+   * @throws RustdocError if root item is missing or not a module
    */
   generate(): GeneratedFile[] {
     const files: GeneratedFile[] = [];
     const rootItem = this.getItem(this.crate.root);
 
-    if (!rootItem || !("module" in rootItem.inner)) {
-      throw new Error("Invalid rustdoc JSON: root item is not a module");
+    if (!rootItem) {
+      throw new RustdocError(
+        ErrorCode.MISSING_ROOT_MODULE,
+        `Root item not found: ${this.crate.root}`,
+        {
+          hint:
+            "The rustdoc JSON appears corrupted or incomplete. Regenerate with:\n" +
+            '  RUSTDOCFLAGS="-Z unstable-options --output-format json" cargo +nightly doc --no-deps',
+          context: {
+            rootId: this.crate.root,
+            indexSize: Object.keys(this.crate.index).length,
+          },
+        }
+      );
+    }
+
+    if (!("module" in rootItem.inner)) {
+      throw new RustdocError(ErrorCode.INVALID_ITEM_STRUCTURE, `Root item is not a module`, {
+        hint: "The rustdoc JSON root item has unexpected type. Verify you're using the correct input file.",
+        context: {
+          rootId: this.crate.root,
+          rootKind: Object.keys(rootItem.inner)[0] ?? "unknown",
+        },
+      });
     }
 
     // Process the root module recursively
@@ -275,7 +372,18 @@ export class RustdocGenerator {
       return;
     }
 
-    if (!("module" in item.inner)) return;
+    // Check for module type with proper warning for unexpected items
+    if (!("module" in item.inner)) {
+      // Only warn if this appears to be a genuine module item (has docs or non-empty name)
+      // This handles format differences and edge cases gracefully
+      const itemName = item.name ?? `id:${String(item.id)}`;
+      if (item.docs || (item.name && item.name.length > 0)) {
+        this.warn(
+          `Expected module type for "${itemName}" but found: ${Object.keys(item.inner).join(", ")}`
+        );
+      }
+      return;
+    }
 
     const module = item.inner.module;
     // Sanitize module name to prevent path traversal
@@ -404,19 +512,7 @@ export class RustdocGenerator {
     }
 
     // Generate table of contents by kind
-    const kindOrder: ItemKind[] = [
-      "struct",
-      "union",
-      "enum",
-      "trait",
-      "function",
-      "type_alias",
-      "constant",
-      "static",
-      "macro",
-    ];
-
-    for (const kind of kindOrder) {
+    for (const kind of KIND_ORDER) {
       const items = itemsByKind.get(kind);
       if (!items || items.length === 0) continue;
 
@@ -453,22 +549,10 @@ export class RustdocGenerator {
     }
 
     // Add items in a logical order with FumaDocs v14+ separators
-    const kindOrder: ItemKind[] = [
-      "struct",
-      "union",
-      "enum",
-      "trait",
-      "function",
-      "type_alias",
-      "constant",
-      "static",
-      "macro",
-    ];
-
     if (this.options.groupBy === "kind") {
       // Group by kind: add kind files with separators
       let addedAny = false;
-      for (const kind of kindOrder) {
+      for (const kind of KIND_ORDER) {
         const items = itemsByKind.get(kind);
         if (items && items.length > 0) {
           if (addedAny) {
@@ -481,7 +565,7 @@ export class RustdocGenerator {
       }
     } else {
       // Module mode: group items by kind with separators
-      for (const kind of kindOrder) {
+      for (const kind of KIND_ORDER) {
         const items = itemsByKind.get(kind);
         if (!items || items.length === 0) continue;
 
@@ -1544,89 +1628,91 @@ export class RustdocGenerator {
   }
 
   /**
+   * Check if an implementation should be excluded from documentation.
+   *
+   * @param impl - The implementation item to check
+   * @returns true if the impl should be excluded, false if it should be included
+   */
+  private shouldExcludeImpl(impl: Item): boolean {
+    if (!("impl" in impl.inner)) return true;
+
+    const implDef = impl.inner.impl;
+
+    // FILTER 1: Blanket implementations
+    // Generic impls like `impl<T> From<T> for T` that apply to all types
+    if (implDef.blanket_impl) return true;
+
+    // FILTER 2: Synthetic implementations
+    // Auto-generated impls for auto traits like Send, Sync, Unpin
+    if (implDef.is_synthetic) return true;
+
+    // FILTER 3: Empty external trait implementations
+    // Trait impls with no local method overrides (all defaults)
+    if (implDef.trait && implDef.items.length === 0) return true;
+
+    return false;
+  }
+
+  /**
+   * Check if a trait implementation has at least one documented method.
+   *
+   * @param impl - The implementation item to check
+   * @returns true if the impl has documented methods or is an inherent impl
+   */
+  private hasDocumentedMethods(impl: Item): boolean {
+    if (!("impl" in impl.inner)) return false;
+
+    const implDef = impl.inner.impl;
+
+    // Inherent impls (no trait) are always included
+    if (!implDef.trait) return true;
+
+    // For trait impls, require at least one documented method
+    return implDef.items.some((methodId) => {
+      const method = this.getItem(methodId);
+      return method?.docs !== undefined;
+    });
+  }
+
+  /**
    * Gets all relevant implementations for a type (struct, enum, or union).
    *
    * This method retrieves and filters implementations to show only the most
-   * useful ones in the documentation. The filtering removes noise from:
+   * useful ones in the documentation. The filtering removes:
    *
-   * **Blanket implementations** (`implDef.blanket_impl`):
-   * Generic implementations like `impl<T> From<T> for T` that apply to all types.
-   * These are excluded because they're auto-derived and not specific to this type.
+   * - **Blanket implementations**: Generic impls like `impl<T> From<T> for T`
+   * - **Synthetic implementations**: Compiler-generated auto trait impls
+   * - **Empty external trait impls**: Trait impls using only default methods
+   * - **Undocumented trait impls**: Trait impls without any documented methods
    *
-   * **Synthetic implementations** (`implDef.is_synthetic`):
-   * Auto-generated implementations (e.g., auto traits like Send/Sync).
-   * These are compiler-generated and don't provide useful documentation.
-   *
-   * **Empty external trait impls** (`implDef.trait && items.length === 0`):
-   * Trait implementations from external crates with no local method overrides.
-   * If all methods use default implementations, there's nothing to document.
-   *
-   * **Undocumented trait impls** (no methods with docs):
-   * For trait implementations, we only include those where at least one method
-   * has documentation. Inherent impls are always included regardless of docs.
+   * Inherent impls (the type's own methods) are always included.
    *
    * @param item - The type item (struct, enum, or union) to get implementations for
    * @returns Array of impl Items that passed all filters
-   *
-   * @remarks
-   * The `impls` field on structs/enums/unions contains IDs referencing impl blocks
-   * in the crate index. This method resolves those IDs and applies the filtering.
    */
   private getImplementations(item: Item): Item[] {
-    const impls: Item[] = [];
-
-    // Extract impl IDs from the appropriate type's inner data.
-    // Structs, enums, and unions all have an `impls` array containing
-    // IDs that reference impl blocks in the crate index.
+    // Extract impl IDs from the type
     let implIds: Id[] = [];
     if ("struct" in item.inner) implIds = item.inner.struct.impls;
     else if ("enum" in item.inner) implIds = item.inner.enum.impls;
     else if ("union" in item.inner) implIds = item.inner.union.impls;
 
+    const results: Item[] = [];
+
     for (const implId of implIds) {
       const impl = this.getItem(implId);
-      if (!impl || !("impl" in impl.inner)) continue;
+      if (!impl) continue;
 
-      const implDef = impl.inner.impl;
+      // Apply exclusion filters
+      if (this.shouldExcludeImpl(impl)) continue;
 
-      // FILTER 1: Blanket implementations
-      // These are generic impls like `impl<T> From<T> for T` or `impl<T: Display> ToString for T`
-      // that apply to any type meeting certain bounds. They create documentation noise
-      // because they're not specific to this type - every type has them.
-      // The `blanket_impl` field is set when the impl has unconstrained type parameters.
-      if (implDef.blanket_impl) continue;
+      // Check for documented methods (trait impls only)
+      if (!this.hasDocumentedMethods(impl)) continue;
 
-      // FILTER 2: Synthetic implementations
-      // These are auto-generated by the compiler for auto traits like Send, Sync, Unpin.
-      // They don't contain meaningful documentation since they're derived automatically
-      // based on the type's fields. The `is_synthetic` flag marks compiler-generated impls.
-      if (implDef.is_synthetic) continue;
-
-      // FILTER 3: Empty external trait implementations
-      // When a trait from an external crate is implemented but all methods use their
-      // default implementations, the `items` array is empty. There's nothing custom
-      // to document in this case - the user can refer to the trait's own documentation.
-      // We check `implDef.trait` to ensure this is a trait impl (not an inherent impl).
-      if (implDef.trait && implDef.items.length === 0) continue;
-
-      // FILTER 4: Undocumented trait implementations
-      // For trait impls with methods, we only include them if at least one method
-      // has documentation. This avoids showing boilerplate implementations that
-      // just delegate to default behavior without explaining anything.
-      // Inherent impls (where implDef.trait is null) are always included since
-      // they represent the type's own methods which are always relevant.
-      const hasDocs = implDef.items.some((methodId) => {
-        const method = this.getItem(methodId);
-        return method?.docs;
-      });
-
-      // Final decision: include inherent impls unconditionally, or trait impls with docs
-      if (!implDef.trait || hasDocs) {
-        impls.push(impl);
-      }
+      results.push(impl);
     }
 
-    return impls;
+    return results;
   }
 
   // Formatting helpers
@@ -1641,7 +1727,7 @@ export class RustdocGenerator {
    */
   private formatFrontmatter(data: Record<string, unknown>): string {
     // Use yaml library for proper escaping of special characters
-    const yamlContent = yamlStringify(data, {
+    const yamlContent = stringify(data, {
       lineWidth: 120, // Reasonable line width for readability
       defaultStringType: "QUOTE_DOUBLE", // Quote strings by default for safety
       defaultKeyType: "PLAIN", // Keep keys unquoted
@@ -1656,13 +1742,17 @@ export class RustdocGenerator {
    * formats the type using the shared `formatType()` function.
    *
    * @param field - A field item (must have 'struct_field' in inner for valid output)
-   * @returns Formatted type string, or "..." if not a valid field item
+   * @returns Formatted type string, or "unknown" if not a valid field item
    */
   private formatFieldType(field: Item): string {
     if ("struct_field" in field.inner) {
       return formatType(field.inner.struct_field);
     }
-    return "...";
+    // Log warning for unexpected field structure (forward compatibility)
+    this.warn(
+      `Expected struct_field for "${field.name ?? String(field.id)}" but found: ${Object.keys(field.inner).join(", ")}`
+    );
+    return "unknown";
   }
 }
 

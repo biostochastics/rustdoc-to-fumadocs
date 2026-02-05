@@ -264,7 +264,10 @@ export function validateRustdocJson(data: unknown): {
   const crate = result.data;
 
   // Step 4: Verify root module exists in index
-  if (!(crate.root in crate.index)) {
+  // Convert root ID to string for consistent lookup (JSON keys are always strings,
+  // but format 56+ may use numeric root IDs)
+  const rootKey = String(crate.root);
+  if (!(rootKey in crate.index)) {
     throw new RustdocError(
       ErrorCode.MISSING_ROOT_MODULE,
       `Root module "${crate.root}" not found in index`,
@@ -275,7 +278,9 @@ export function validateRustdocJson(data: unknown): {
           '  RUSTDOCFLAGS="-Z unstable-options --output-format json" cargo +nightly doc --no-deps',
         context: {
           root: crate.root,
+          rootKey,
           indexSize: Object.keys(crate.index).length,
+          sampleKeys: Object.keys(crate.index).slice(0, 5),
         },
       }
     );

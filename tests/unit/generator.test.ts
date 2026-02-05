@@ -66,8 +66,9 @@ describe("sanitizePath", () => {
       expect(sanitizePath("_private")).toBe("_private");
     });
 
-    it("should handle empty string", () => {
-      expect(sanitizePath("")).toBe("");
+    it("should handle empty string by returning 'unnamed'", () => {
+      expect(sanitizePath("")).toBe("unnamed");
+      expect(sanitizePath("   ")).toBe("unnamed"); // whitespace-only also returns "unnamed"
     });
   });
 

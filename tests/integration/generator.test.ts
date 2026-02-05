@@ -219,7 +219,7 @@ describe("RustdocGenerator", () => {
             crate_id: 0,
             name: "not_a_module",
             visibility: "public",
-            docs: null,
+            docs: undefined,
             links: {},
             attrs: [],
             inner: {
@@ -244,7 +244,7 @@ describe("RustdocGenerator", () => {
       };
 
       const generator = new RustdocGenerator(invalidCrate, defaultOptions);
-      expect(() => generator.generate()).toThrow("root item is not a module");
+      expect(() => generator.generate()).toThrow("Root item is not a module");
     });
   });
 

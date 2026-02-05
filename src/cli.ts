@@ -394,9 +394,16 @@ function main(): void {
     }
   }
 
-  // Suppress console output in JSON mode
+  // Create logger that respects JSON mode
+  // In JSON mode, info messages are suppressed but errors still go to stderr
   // eslint-disable-next-line @typescript-eslint/no-empty-function
-  const log = args.json ? () => {} : console.log.bind(console);
+  const noop = () => {};
+  const logger = {
+    info: args.json ? noop : console.log.bind(console),
+    warn: args.verbose ? console.warn.bind(console) : noop,
+    error: console.error.bind(console),
+  };
+  const log = logger.info;
 
   log(`Loading rustdoc JSON from: ${inputPath}`);
 

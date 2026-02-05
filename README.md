@@ -74,6 +74,7 @@ rustdoc-to-fumadocs converts Rust's `rustdoc` JSON output into [FumaDocs](https:
 | ------------------- | ---------------------------------------------------------- |
 | **FumaDocs v14+**   | Full support for icons, separators, Callouts, Tabs, Cards  |
 | **Validation**      | Zod schemas with helpful error messages and hints          |
+| **Error Handling**  | Structured errors with codes, hints, and recovery context  |
 | **Components**      | Deprecation, Safety, Panics, Errors, Feature Gate callouts |
 | **Navigation**      | auto-generated meta.json with icons and separators         |
 | **Flexible Output** | Group by module, kind, or flat structure                   |
@@ -345,24 +346,151 @@ npm run format       # Prettier
 
 ---
 
+## Deploying to FumaDocs
+
+The generated files are **deployment-ready** for FumaDocs v14+ projects. Follow this checklist to integrate:
+
+### Deployment Checklist
+
+1. **Generate with dry-run first** to preview output:
+
+   ```bash
+   rustdoc-to-fumadocs --input my_crate.json --output content/docs/api --dry-run
+   ```
+
+2. **Copy generated files** to your FumaDocs content directory:
+
+   ```bash
+   rustdoc-to-fumadocs --input my_crate.json --output content/docs/api
+   ```
+
+3. **Verify required components** are exported in `mdx-components.tsx`:
+
+   ```tsx
+   import { Callout } from "fumadocs-ui/components/callout";
+   import { Tabs, Tab } from "fumadocs-ui/components/tabs";
+   import { Cards, Card } from "fumadocs-ui/components/card";
+   ```
+
+4. **Install Lucide icons** (used in frontmatter):
+
+   ```bash
+   npm install lucide-react
+   ```
+
+   Icons used: `Box`, `List`, `Puzzle`, `Code`, `Type`, `Hash`, `Wand2`, `Folder`
+
+5. **Build and verify**:
+   ```bash
+   npm run build  # Verify MDX compilation
+   npm run dev    # Check navigation and rendering
+   ```
+
+### Post-Generation Review
+
+| Check                | What to Look For                                         |
+| -------------------- | -------------------------------------------------------- |
+| **Navigation**       | Sidebar shows module hierarchy with icons and separators |
+| **Frontmatter**      | Pages have correct titles and descriptions               |
+| **Components**       | Callouts render for deprecations, safety warnings, etc.  |
+| **Cross-references** | "See Also" cards link to related types                   |
+| **Code blocks**      | Rust syntax highlighting works                           |
+
+### CI/CD Integration
+
+```yaml
+# Example GitHub Actions step
+- name: Generate API docs
+  run: |
+    RUSTDOCFLAGS="-Z unstable-options --output-format json" cargo +nightly doc --no-deps
+    npx rustdoc-to-fumadocs --input target/doc/my_crate.json --output content/docs/api --json
+```
+
+---
+
+## Known Limitations & Caveats
+
+### Generation Limitations
+
+| Limitation                      | Impact                                        | Workaround                       |
+| ------------------------------- | --------------------------------------------- | -------------------------------- |
+| **Requires nightly Rust**       | Cannot use stable rustdoc                     | Use `RUSTC_BOOTSTRAP=1` in CI    |
+| **Blanket impls filtered**      | Generic impls like `impl<T> From<T>` excluded | Usually desirable; reduces noise |
+| **Max 6 cross-reference cards** | Large types may have incomplete "See Also"    | Acceptable for most use cases    |
+| **Re-exports not rendered**     | `pub use` items don't get separate pages      | Document in parent module        |
+
+### Content Caveats
+
+| Issue                           | Symptom                           | Cause                                        | Resolution                        |
+| ------------------------------- | --------------------------------- | -------------------------------------------- | --------------------------------- |
+| **`undefined` types**           | Type links show as `undefined`    | External crate types not in local index      | Manual editing or link to docs.rs |
+| **Simplified async signatures** | Complex lifetimes abbreviated     | Async return types with many lifetime params | Rarely affects readability        |
+| **Missing trait impls**         | Some trait implementations absent | Filtered as blanket/synthetic                | Check if impl is truly needed     |
+| **Broken intra-doc links**      | Links to external crates fail     | External types not resolved                  | Links redirect to docs.rs         |
+
+### When to Expect Manual Editing
+
+- **Heavy external dependencies**: Crates using many types from other crates will have `undefined` references
+- **Complex generic bounds**: Deeply nested generics may render with simplified notation
+- **Custom formatting**: If you need different component styles or layouts
+
+### Tested Compatibility
+
+Generated output verified against real-world crates:
+
+| Crate          | Complexity              | Files | Status   |
+| -------------- | ----------------------- | ----- | -------- |
+| **syn**        | High (complex generics) | 148   | ✅ Works |
+| **tokio**      | High (async types)      | 76    | ✅ Works |
+| **serde_core** | Medium (trait-heavy)    | 57    | ✅ Works |
+| **anyhow**     | Low (simple API)        | 9     | ✅ Works |
+
+---
+
+## Unsupported Features
+
+The following rustdoc/documentation features are not currently supported:
+
+- Doc aliases (`#[doc(alias = "...")]`)
+- Auto-derive size documentation (`--show-type-sizes`)
+- Item examples from external files
+- Custom rustdoc CSS/themes
+- Fuzzy search index generation
+- Intra-doc links to external crates (redirects to docs.rs instead)
+
+---
+
 ## Troubleshooting
+
+### Generation Issues
 
 | Issue                         | Solution                                                  |
 | ----------------------------- | --------------------------------------------------------- |
 | "Could not find rustdoc JSON" | Run `cargo +nightly doc` with `--output-format json` flag |
-| "Format version too old"      | Upgrade Rust: `rustup update`                             |
+| "Format version too old"      | Upgrade Rust: `rustup update nightly`                     |
+| "Format version too new"      | Update rustdoc-to-fumadocs or use `--force` flag          |
 | Missing implementations       | Blanket/synthetic impls are filtered by design            |
-| Component import errors       | Ensure mdx-components.tsx exports Callout, Tabs, Cards    |
+| `undefined` type references   | External crate types - expected behavior                  |
 
----
+### FumaDocs Deployment Issues
 
-## Limitations
+| Issue                             | Solution                                                                         |
+| --------------------------------- | -------------------------------------------------------------------------------- |
+| Component import errors           | Ensure `mdx-components.tsx` exports `Callout`, `Tabs`, `Tab`, `Cards`, `Card`    |
+| Icons not rendering               | Install `lucide-react` and verify icon names in frontmatter                      |
+| Sidebar missing items             | Check `meta.json` exists in each module directory                                |
+| MDX compilation fails             | Verify all component imports are correct; check for unescaped special characters |
+| Navigation separators not showing | Ensure FumaDocs v14+ is installed (separators use `---Name---` format)           |
+| `defaultOpen` not working         | Requires FumaDocs v14+; check `meta.json` format                                 |
 
-- Requires nightly Rust (or `RUSTC_BOOTSTRAP=1`) for JSON generation
-- Blanket and synthetic implementations filtered out
-- Cross-crate links point to docs.rs
-- Re-exports not rendered as separate pages
-- Maximum 6 cross-reference cards per item
+### Validation Errors
+
+| Error Code                   | Meaning                | Fix                                  |
+| ---------------------------- | ---------------------- | ------------------------------------ |
+| `INVALID_JSON`               | File is not valid JSON | Check rustdoc completed successfully |
+| `UNSUPPORTED_FORMAT_VERSION` | Format outside v35-57  | Update Rust or this tool             |
+| `MISSING_ROOT_MODULE`        | Root module not found  | Verify rustdoc output is complete    |
+| `UNRESOLVED_TYPE`            | Type reference missing | External crate type - expected       |
 
 ---
 
