@@ -384,7 +384,7 @@ git commit -m "feat: add my feature"
 
 **[MIT License](LICENSE)**
 
-Copyright (c) 2024 biostochastics
+Copyright (c) 2026 biostochastics
 
 ---
 
