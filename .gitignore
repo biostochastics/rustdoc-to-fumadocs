@@ -44,6 +44,7 @@ Thumbs.db
 
 # AI/LLM Agent files and directories
 CLAUDE.md
+docs/
 .claude/
 .cursor/
 .aider/
