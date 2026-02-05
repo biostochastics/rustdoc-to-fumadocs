@@ -42,7 +42,8 @@ Thumbs.db
 *.tgz
 .npmrc
 
-# AI/LLM Agent directories
+# AI/LLM Agent files and directories
+CLAUDE.md
 .claude/
 .cursor/
 .aider/
