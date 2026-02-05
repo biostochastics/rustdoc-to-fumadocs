@@ -1,10 +1,19 @@
-# CLAUDE.md
+# rustdoc-to-fumadocs
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+**TypeScript tool that converts Rust's `rustdoc` JSON output to FumaDocs v14+ compatible MDX files.**
 
-## Project Overview
+Part of the resume-factory monorepo under `tools/`.
 
-A TypeScript tool that converts Rust's `rustdoc` JSON output to FumaDocs v14+ compatible MDX files. Part of the resume-factory monorepo under `tools/`.
+## Quick Reference
+
+| Category        | Command/Value                                                                          |
+| --------------- | -------------------------------------------------------------------------------------- |
+| **Install**     | `npm install && npm run build`                                                         |
+| **Dev Run**     | `npm run dev -- --input <json> --output <dir>`                                         |
+| **Test**        | `npm run test:run` (222 tests)                                                         |
+| **Coverage**    | `npm run test:coverage` (~61% coverage)                                                |
+| **Lint**        | `npm run lint && npm run format:check`                                                 |
+| **Rustdoc Gen** | `RUSTDOCFLAGS="-Z unstable-options --output-format json" cargo +nightly doc --no-deps` |
 
 ## Commands
 
@@ -12,44 +21,51 @@ A TypeScript tool that converts Rust's `rustdoc` JSON output to FumaDocs v14+ co
 # Install dependencies
 npm install
 
-# Run the generator (development)
+# Development - run CLI directly
 npm run dev -- --input <path-to-rustdoc-json> --output <output-dir>
 npm run generate -- --crate <crate-name> --output <output-dir>
 
-# Build for production
+# Production build
 npm run build
 
-# Run tests
-npm run test           # Watch mode
-npm run test:run       # Single run
-npm run test:coverage  # With coverage
+# Testing
+npm test              # Watch mode (re-runs on file changes)
+npm run test:run      # Single run (222 tests)
+npm run test:coverage # Coverage report with HTML output
 
-# Generate rustdoc JSON (prerequisite)
-RUSTDOCFLAGS="-Z unstable-options --output-format json" cargo +nightly doc --no-deps
-# Or with stable Rust:
-RUSTC_BOOTSTRAP=1 RUSTDOCFLAGS="-Z unstable-options --output-format json" cargo doc --no-deps
+# Code quality
+npm run lint          # ESLint with fixes
+npm run format        # Prettier formatting
+npm run format:check  # Check formatting only
+npm run typecheck     # TypeScript type checking
+
+# Release (requires changesets)
+npm run changeset     # Create changeset
+npm run version       # Bump versions
+npm run release       # Build + publish
 ```
 
 ## Architecture
 
 ```
+
 src/
-├── index.ts        # Library entry point, re-exports generator and types
-├── cli.ts          # CLI with argument parsing, dry-run, JSON output
-├── types.ts        # TypeScript types mirroring rustdoc_json_types (format v35-57)
-├── errors.ts       # Custom error types with codes and hints
-├── validation.ts   # Zod schemas for rustdoc JSON validation
-├── generator.ts    # RustdocGenerator class - core conversion logic
-└── renderer/       # Modular rendering utilities
-    ├── index.ts    # RenderContext and exports
-    ├── types.ts    # Type formatting (formatType, formatGenericArg)
+├── index.ts          # Library entry point, re-exports generator and types
+├── cli.ts            # CLI with argument parsing, dry-run, JSON output
+├── types.ts          # TypeScript types mirroring rustdoc_json_types (format v35-57)
+├── errors.ts         # Custom error types with codes and hints
+├── validation.ts     # Zod schemas for rustdoc JSON validation
+├── generator.ts      # RustdocGenerator class - core conversion logic (~1770 lines)
+└── renderer/         # Modular rendering utilities
+    ├── index.ts      # RenderContext and exports
+    ├── types.ts      # Type formatting (formatType, formatGenericArg)
     ├── signatures.ts # Signature formatting (function, struct, enum, trait)
     └── components.ts # FumaDocs component generators (Callout, Tabs, Cards)
 
 tests/
-├── fixtures/       # Test data (minimal.json, etc.)
-├── unit/           # Unit tests for each module
-└── integration/    # Integration tests for generator
+├── fixtures/         # Test data (minimal.json, etc.)
+├── unit/             # Unit tests for each module
+└── integration/      # Integration tests for generator
 ```
 
 ### Key Components
@@ -71,10 +87,11 @@ tests/
 - Zod schemas validate rustdoc JSON structure
 - Format version checking (35-57 supported, newer versions warn)
 - Helpful error messages with hints and context
+- `validateRustdocJson()` returns `{ crate: Crate, warnings: string[] }`
 
 **Renderer** (renderer/):
 
-- `RenderContext`: Tracks component usage, generates imports
+- `RenderContext`: Tracks component usage, generates imports for MDX
 - `formatType()`: Handles all rustdoc type variants
 - `formatFunctionSignature()`, etc.: Item signature rendering
 - `renderCallout()`, `renderTabs()`, `renderCards()`: FumaDocs components
@@ -120,7 +137,7 @@ icon: "Box"
 
 **Icon Mapping:**
 | Kind | Icon |
-|------|------|
+|-------------|--------|
 | struct | Box |
 | enum | List |
 | trait | Puzzle |
@@ -138,10 +155,25 @@ icon: "Box"
 
 ### CLI Options
 
-- `--no-tabs`: Disable Tabs component for implementations
-- `--no-cards`: Disable Cards component for cross-references
-- `--dry-run`: Show what would be generated without writing
-- `--json`: Output results as JSON for CI integration
+```bash
+# Core options
+-i, --input <path>      Path to rustdoc JSON file
+-c, --crate <name>      Crate name (looks in target/doc/<name>.json)
+-o, --output <dir>      Output directory (default: content/docs/api)
+-b, --base-url <url>    Base URL for generated docs (default: /docs/api)
+-g, --group-by <mode>   Group items by: module, kind, or flat (default: module)
+
+# Output customization
+--no-index              Don't generate index pages for modules
+--no-tabs               Don't use Tabs component for implementations
+--no-cards              Don't use Cards component for cross-references
+
+# Output modes
+-n, --dry-run           Show what would be generated without writing files
+--json                  Output results as JSON (for scripting/CI)
+-v, --verbose           Show verbose output
+-h, --help              Show help message
+```
 
 ## Type Rendering
 
@@ -161,65 +193,101 @@ The `formatType()` method handles all rustdoc type variants:
 
 The generator creates multiple callout types:
 
-- **Deprecation**: `<Callout type="warn">` with version and note
-- **Safety**: `<Callout type="error">` for unsafe items, extracts `# Safety` section
-- **Panics**: `<Callout type="error">` extracts `# Panics` section
-- **Errors**: `<Callout type="warn">` extracts `# Errors` section
-- **Feature Gate**: `<Callout type="info">` for `#[cfg(feature = "...")]`
+| Type         | Component                | Trigger                   | Content                         |
+| ------------ | ------------------------ | ------------------------- | ------------------------------- |
+| Deprecation  | `<Callout type="warn">`  | `#[deprecated]` attribute | Version and note from attribute |
+| Safety       | `<Callout type="error">` | `unsafe` keyword          | Extracted `# Safety` section    |
+| Panics       | `<Callout type="error">` | `# Panics` in docs        | Full `# Panics` section content |
+| Errors       | `<Callout type="warn">`  | `# Errors` in docs        | Full `# Errors` section content |
+| Feature Gate | `<Callout type="info">`  | `#[cfg(feature = "...")]` | Feature name and status         |
 
 ## Implementation Filtering
 
-The `getImplementations()` method filters out:
+The `getImplementations()` method filters items using multiple strategies:
 
-- **Blanket impls**: Generic implementations like `impl<T> From<T> for T`
-- **Synthetic impls**: Auto-generated implementations
-- **External trait impls with no local methods**: Reduces noise
-- **Trait impls without documentation**: Only includes documented impl blocks
+**Excluded:**
+
+- **Blanket impls**: Generic implementations matching patterns like `impl<T> From<T> for T`
+- **Synthetic impls**: Auto-generated implementations (compiler-created)
+- **External trait impls**: Trait implementations from other crates without local methods
+- **Undocumented impls**: Trait blocks without any documented methods
+
+**Included:**
+
+- Inherent implementations (`impl StructName`)
+- Trait implementations with at least one documented method
+- Local trait implementations with documentation
 
 ## Cross-Reference Detection
 
 The `extractCrossReferences()` method scans:
 
-- Function parameters and return types
-- Struct and union field types
-- Enum variant field types
-- Trait supertraits (bounds)
+1. Function parameters and return types
+2. Struct and union field types
+3. Enum variant field types
+4. Trait supertraits (bounds)
 
-Only local crate types with `visibility: "public"` are included.
+**Constraints:**
+
+- Only local crate types (not external crates)
+- Only public visibility items (`visibility: "public"`)
+- Maximum 6 cross-reference cards per item
+- External crate types may show as `undefined`
 
 ## Rustdoc JSON Format
 
-Supports format versions 35-57 (Rust 1.76+). The format is unstable - check `format_version` field if issues occur.
+Supports format versions 35-57 (Rust 1.76-1.85+). The format is unstable - check `format_version` field if issues occur.
 
-Key structures:
+### Key Structures
 
-- Items stored in `crate.index` keyed by ID strings
-- Paths stored in `crate.paths` for cross-references
-- Implementations referenced via `impls: Id[]` on structs/enums/unions
-- Constants have nested `const` field: `constant.type`, `constant.const.expr`
+| Field          | Description                                  |
+| -------------- | -------------------------------------------- |
+| `crate.index`  | Items keyed by ID strings/numbers            |
+| `crate.paths`  | Path information for cross-references        |
+| `crate.impls`  | All implementation blocks                    |
+| `item.impls[]` | References to impls for structs/enums/unions |
+
+### Constants and Special Cases
+
+Constants have nested structure:
+
+```typescript
+{
+  type: Type,      // TypeScript type representation
+  const: {
+    expr: string,  // Constant expression as string
+  }
+}
+```
 
 ### Format Version 56+ Changes (Rust 1.85+)
 
-Format v56 introduced several breaking changes that this tool handles:
+Format v56 introduced breaking changes that this tool handles transparently:
 
-| Change            | Old Format (v35-55)         | New Format (v56+)           |
-| ----------------- | --------------------------- | --------------------------- |
-| Item IDs          | String `"0:123:456"`        | Numeric `123`               |
-| Attributes        | String `"#[derive(Debug)]"` | Object `{ "other": "..." }` |
-| Unit struct kind  | `{ "unit": true }`          | `"unit"` string             |
-| Unit variant kind | `{ "plain": true }`         | `"plain"` string            |
-| Lifetime names    | Already include `'`         | `"'de"`, `"'static"`        |
+| Feature      | Old Format (v35-55)         | New Format (v56+)                              |
+| ------------ | --------------------------- | ---------------------------------------------- |
+| Item IDs     | String `"0:123:456"`        | Numeric `123`                                  |
+| Attributes   | String `"#[derive(Debug)]"` | Object `{ "kind": "derive", "path": "Debug" }` |
+| Unit struct  | `{ "unit": true }`          | `"unit"` string                                |
+| Unit variant | `{ "plain": true }`         | `"plain"` string                               |
+| Lifetimes    | `'` included                | `"'de"`, `"'static"`                           |
 
-The tool includes helper functions (`isUnitStruct`, `isPlainVariant`, etc.) to handle both formats transparently.
+**Helper functions for compatibility:**
+
+- `isUnitStruct(kind)` - Detect unit structs (types.ts)
+- `isPlainVariant(kind)` - Detect plain enum variants (generator.ts)
+- `is_synthetic` field - Check `implDef.is_synthetic` for compiler-generated impls
 
 ### External Crate Testing
 
-Tested against popular public crates (format v56):
+Verified against popular crates (format v56):
 
-- **syn** (148 files) - Rust syntax parsing library
-- **tokio** (76 files) - Async runtime
-- **serde_core** (57 files) - Serialization framework
-- **anyhow** (9 files) - Error handling
+| Crate      | Files | Purpose             |
+| ---------- | ----- | ------------------- |
+| syn        | 148   | Rust syntax parsing |
+| tokio      | 76    | Async runtime       |
+| serde_core | 57    | Serialization       |
+| anyhow     | 9     | Error handling      |
 
 ## Error Handling
 
@@ -227,6 +295,20 @@ Tested against popular public crates (format v56):
 - `validateRustdocJson()` provides helpful validation errors
 - `getItemKind()` returns `"unknown"` for forward compatibility
 - Unknown items are skipped with a warning instead of crashing
+
+### Error Codes
+
+| Code                       | Description                  | Hint                                 |
+| -------------------------- | ---------------------------- | ------------------------------------ |
+| INVALID_JSON               | JSON parse error             | Check file is valid JSON             |
+| UNSUPPORTED_FORMAT_VERSION | Format version outside 35-57 | Update Rust toolchain or tool        |
+| MISSING_ROOT_MODULE        | Root module ID not in index  | Verify rustdoc output completeness   |
+| INVALID_ITEM_STRUCTURE     | Item missing required fields | Check rustdoc JSON structure         |
+| UNKNOWN_ITEM_KIND          | Unrecognized item kind       | Update tool for new rustdoc features |
+| UNRESOLVED_TYPE            | Type reference not found     | External crate or missing item       |
+| MISSING_ITEM_REFERENCE     | Referenced ID not in index   | Check for corrupted rustdoc output   |
+| INPUT_READ_FAILED          | Cannot read input file       | Check file exists and permissions    |
+| OUTPUT_WRITE_FAILED        | Cannot write output file     | Check output directory permissions   |
 
 ## Security
 
@@ -241,6 +323,16 @@ The tool includes several security measures:
 - **Output Path Validation**: `validateOutputPath()` in cli.ts ensures resolved paths stay within output directory
 - **Recursion Limits**: `MAX_RECURSION_DEPTH` (100) prevents stack overflow
 - **Warning Limits**: `MAX_WARNINGS` (50) prevents console flooding
+
+### Security Best Practices
+
+When using this tool:
+
+1. **Validate input sources** - Only process rustdoc JSON from trusted crates
+2. **Use dry-run first** - Preview output before writing files: `--dry-run`
+3. **Review JSON output** - Use `--json` to inspect generated paths programmatically
+4. **Sandbox untrusted input** - Run in container/VM when processing external crates
+5. **Monitor resource usage** - Watch for unusual memory consumption with large inputs
 
 ## Testing
 
@@ -334,15 +426,16 @@ const data = JSON.parse(content);
 
 ### Coverage Targets
 
-| Module                   | Current  | Target   | Priority |
-| ------------------------ | -------- | -------- | -------- |
-| `validation.ts`          | 100%     | 100%     | Critical |
-| `renderer/components.ts` | 100%     | 100%     | Critical |
-| `renderer/types.ts`      | 99%      | 100%     | Critical |
-| `renderer/signatures.ts` | ~80%     | 90%+     | High     |
-| `generator.ts`           | ~50%     | 80%+     | High     |
-| `errors.ts`              | ~70%     | 90%+     | Medium   |
-| **Overall**              | **~61%** | **80%+** | -        |
+| Module                   | Current | Target   | Priority |
+| ------------------------ | ------- | -------- | -------- |
+| `validation.ts`          | 100%    | 100%     | Critical |
+| `renderer/components.ts` | 100%    | 100%     | Critical |
+| `renderer/types.ts`      | 99%     | 100%     | Critical |
+| `renderer/signatures.ts` | 85%     | 90%+     | High     |
+| `generator.ts`           | 41%     | 80%+     | High     |
+| `errors.ts`              | 62%     | 90%+     | Medium   |
+| `renderer/index.ts`      | 70%     | 90%+     | Medium   |
+| **Overall**              | **60%** | **80%+** | -        |
 
 **Priority areas for coverage improvement:**
 
@@ -372,8 +465,8 @@ The codebase was reviewed by 4 AI models (kimi-k2, glm-4.7, minimax-m2.1, gemini
 
 **Known improvements needed:**
 
-- Split generator.ts (~1340 lines) into smaller modules
-- Increase test coverage to 80%+
+- Split generator.ts (~1770 lines) into smaller modules
+- Increase test coverage to 80%+ (currently 60%)
 - Consider CLI framework (commander/yargs) for maintainability
 
 ## Known Limitations
@@ -383,3 +476,23 @@ The codebase was reviewed by 4 AI models (kimi-k2, glm-4.7, minimax-m2.1, gemini
 - Macro documentation depends on rustdoc output completeness
 - Maximum 6 cross-reference cards per item
 - Some complex async return types with lifetime parameters may show simplified representations
+- Blanket implementations are filtered out (may miss some trait impls)
+- Requires nightly Rust or RUSTC_BOOTSTRAP=1 for rustdoc JSON generation
+
+### Unsupported Features
+
+The following rustdoc features are not currently supported:
+
+- Auto-derive documentation (rustdoc --show-type-sizes)
+- Item examples from external files
+- Custom rustdoc CSS/themes
+- Intra-doc links to external crates (links to docs.rs instead)
+- Doc aliases (`#[doc(alias = "...")]`)
+- Fuzzy search index generation
+- Theme customization in output
+
+### Performance Considerations
+
+- Large crates (100+ modules) may take several minutes to process
+- Memory usage scales with crate complexity (~500MB for large crates)
+- Consider `--group-by kind` for simpler navigation of complex crates
