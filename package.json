@@ -1,0 +1,94 @@
+{
+  "name": "rustdoc-to-fumadocs",
+  "version": "0.2.0",
+  "description": "Convert rustdoc JSON to Fumadocs-compatible MDX files",
+  "keywords": [
+    "rustdoc",
+    "fumadocs",
+    "mdx",
+    "documentation",
+    "rust",
+    "typescript",
+    "api-docs",
+    "converter"
+  ],
+  "author": "biostochastics",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/biostochastics/rustdoc-to-fumadocs.git"
+  },
+  "homepage": "https://github.com/biostochastics/rustdoc-to-fumadocs#readme",
+  "bugs": {
+    "url": "https://github.com/biostochastics/rustdoc-to-fumadocs/issues"
+  },
+  "type": "module",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "bin": {
+    "rustdoc-to-fumadocs": "dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx src/cli.ts",
+    "generate": "tsx src/cli.ts",
+    "test": "vitest",
+    "test:run": "vitest run",
+    "test:coverage": "vitest run --coverage",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "typecheck": "tsc --noEmit",
+    "changeset": "changeset",
+    "version": "changeset version",
+    "release": "npm run build && changeset publish",
+    "prepublishOnly": "npm run build",
+    "prepare": "husky"
+  },
+  "dependencies": {
+    "yaml": "^2.3.4",
+    "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "@changesets/cli": "^2.29.8",
+    "@commitlint/cli": "^20.4.1",
+    "@commitlint/config-conventional": "^20.4.1",
+    "@eslint/js": "^9.39.2",
+    "@types/node": "^20.11.0",
+    "@vitest/coverage-v8": "^4.0.18",
+    "eslint": "^9.39.2",
+    "eslint-config-prettier": "^10.1.8",
+    "husky": "^9.1.7",
+    "lint-staged": "^16.2.7",
+    "prettier": "^3.8.1",
+    "tsx": "^4.7.0",
+    "typescript": "^5.3.3",
+    "typescript-eslint": "^8.54.0",
+    "vitest": "^4.0.18"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "lint-staged": {
+    "*.{ts,mjs,js}": [
+      "eslint --fix",
+      "prettier --write"
+    ],
+    "*.{json,md,yml,yaml}": [
+      "prettier --write"
+    ]
+  }
+}

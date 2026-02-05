@@ -1,0 +1,166 @@
+{
+  "root": "0:0:0",
+  "crate_version": "0.1.0",
+  "includes_private": false,
+  "index": {
+    "0:0:0": {
+      "id": "0:0:0",
+      "crate_id": 0,
+      "name": "test_crate",
+      "span": null,
+      "visibility": "public",
+      "docs": "A minimal test crate for rustdoc-to-fumadocs testing.",
+      "links": {},
+      "attrs": [],
+      "deprecation": null,
+      "inner": {
+        "module": {
+          "is_crate": true,
+          "items": ["0:1:0", "0:2:0", "0:3:0"],
+          "is_stripped": false
+        }
+      }
+    },
+    "0:1:0": {
+      "id": "0:1:0",
+      "crate_id": 0,
+      "name": "TestStruct",
+      "span": {
+        "filename": "src/lib.rs",
+        "begin": [5, 0],
+        "end": [10, 1]
+      },
+      "visibility": "public",
+      "docs": "A simple test struct with one field.",
+      "links": {},
+      "attrs": [],
+      "deprecation": null,
+      "inner": {
+        "struct": {
+          "kind": {
+            "plain": {
+              "fields": ["0:1:1"],
+              "has_stripped_fields": false
+            }
+          },
+          "generics": {
+            "params": [],
+            "where_predicates": []
+          },
+          "impls": []
+        }
+      }
+    },
+    "0:1:1": {
+      "id": "0:1:1",
+      "crate_id": 0,
+      "name": "value",
+      "span": {
+        "filename": "src/lib.rs",
+        "begin": [6, 4],
+        "end": [6, 18]
+      },
+      "visibility": "public",
+      "docs": "The value field of the struct.",
+      "links": {},
+      "attrs": [],
+      "deprecation": null,
+      "inner": {
+        "struct_field": {
+          "primitive": "i32"
+        }
+      }
+    },
+    "0:2:0": {
+      "id": "0:2:0",
+      "crate_id": 0,
+      "name": "test_function",
+      "span": {
+        "filename": "src/lib.rs",
+        "begin": [15, 0],
+        "end": [18, 1]
+      },
+      "visibility": "public",
+      "docs": "A simple test function that adds two numbers.",
+      "links": {},
+      "attrs": [],
+      "deprecation": null,
+      "inner": {
+        "function": {
+          "sig": {
+            "inputs": [
+              ["a", { "primitive": "i32" }],
+              ["b", { "primitive": "i32" }]
+            ],
+            "output": { "primitive": "i32" }
+          },
+          "generics": {
+            "params": [],
+            "where_predicates": []
+          },
+          "header": {
+            "is_const": false,
+            "is_unsafe": false,
+            "is_async": false,
+            "abi": "Rust"
+          },
+          "has_body": true
+        }
+      }
+    },
+    "0:3:0": {
+      "id": "0:3:0",
+      "crate_id": 0,
+      "name": "DeprecatedItem",
+      "span": {
+        "filename": "src/lib.rs",
+        "begin": [20, 0],
+        "end": [22, 1]
+      },
+      "visibility": "public",
+      "docs": "A deprecated struct for testing deprecation rendering.",
+      "links": {},
+      "attrs": ["#[deprecated(since = \"0.2.0\", note = \"Use NewItem instead\")]"],
+      "deprecation": {
+        "since": "0.2.0",
+        "note": "Use NewItem instead"
+      },
+      "inner": {
+        "struct": {
+          "kind": {
+            "unit": true
+          },
+          "generics": {
+            "params": [],
+            "where_predicates": []
+          },
+          "impls": []
+        }
+      }
+    }
+  },
+  "paths": {
+    "0:0:0": {
+      "crate_id": 0,
+      "path": ["test_crate"],
+      "kind": "module"
+    },
+    "0:1:0": {
+      "crate_id": 0,
+      "path": ["test_crate", "TestStruct"],
+      "kind": "struct"
+    },
+    "0:2:0": {
+      "crate_id": 0,
+      "path": ["test_crate", "test_function"],
+      "kind": "function"
+    },
+    "0:3:0": {
+      "crate_id": 0,
+      "path": ["test_crate", "DeprecatedItem"],
+      "kind": "struct"
+    }
+  },
+  "external_crates": {},
+  "format_version": 57
+}
