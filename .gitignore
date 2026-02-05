@@ -41,3 +41,20 @@ Thumbs.db
 # Misc
 *.tgz
 .npmrc
+
+# AI/LLM Agent directories
+.claude/
+.cursor/
+.aider/
+.copilot/
+.codeium/
+.continue/
+.windsurf/
+.tabnine/
+.sourcegraph/
+.codegen/
+
+# AI conversation/session files
+*.aider*
+.aider.chat.history.md
+.aider.input.history
