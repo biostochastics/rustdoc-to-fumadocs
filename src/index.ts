@@ -57,3 +57,13 @@ export {
   type GenerationWarning,
   type WarningSeverity,
 } from "./renderer/index.js";
+
+// Cargo workspace helpers for programmatic multi-crate generation.
+export {
+  loadWorkspace,
+  findMemberRustdocJson,
+  renderWorkspaceMeta,
+  renderWorkspaceIndex,
+  type Workspace,
+  type WorkspaceMember,
+} from "./workspace.js";

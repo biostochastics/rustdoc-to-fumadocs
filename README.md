@@ -474,13 +474,13 @@ The following rustdoc/documentation features are not currently supported:
 
 ### Generation Issues
 
-| Issue                         | Solution                                                  |
-| ----------------------------- | --------------------------------------------------------- |
-| "Could not find rustdoc JSON" | Run `cargo +nightly doc` with `--output-format json` flag |
-| "Format version too old"      | Upgrade Rust: `rustup update nightly`                     |
-| "Format version too new"      | Update rustdoc-to-fumadocs or use `--force` flag          |
-| Missing implementations       | Blanket/synthetic impls are filtered by design            |
-| `undefined` type references   | External crate types - expected behavior                  |
+| Issue                         | Solution                                                             |
+| ----------------------------- | -------------------------------------------------------------------- |
+| "Could not find rustdoc JSON" | Run `cargo +nightly doc` with `--output-format json` flag            |
+| "Format version too old"      | Upgrade Rust: `rustup update nightly`                                |
+| "Format version too new"      | Update rustdoc-to-fumadocs; newer formats are accepted with warnings |
+| Missing implementations       | Blanket/synthetic impls are filtered by design                       |
+| `<Self as ?>::Name` in output | The trait's ID wasn't in the local `paths` table (external trait)    |
 
 ### FumaDocs Deployment Issues
 
