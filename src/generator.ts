@@ -18,8 +18,17 @@
  */
 
 import { stringify } from "yaml";
-import type { RustdocCrate, Item, ItemKind, Id, VariantKind, Type, Attribute } from "./types.js";
-import { getItemKind, isPlainStruct } from "./types.js";
+import type {
+  RustdocCrate,
+  Item,
+  ItemKind,
+  Id,
+  VariantKind,
+  Type,
+  Attribute,
+  GenericArgs,
+} from "./types.js";
+import { getItemKind, isPlainStruct, getPathName } from "./types.js";
 import { RustdocError, ErrorCode } from "./errors.js";
 
 /**
@@ -33,6 +42,12 @@ const MAX_RECURSION_DEPTH = 100;
  * Prevents console flooding from corrupted input with many unknown items.
  */
 const MAX_WARNINGS = 50;
+
+/**
+ * Maximum depth for type reference traversal.
+ * Prevents stack overflow from deeply nested generic types.
+ */
+const MAX_TYPE_DEPTH = 50;
 
 /**
  * Centralized ordering of item kinds for consistent display across the generator.
@@ -96,6 +111,11 @@ export function sanitizePath(segment: string): string {
     }
   }
 
+  // Final check: if sanitization resulted in empty string (e.g., "../../"), return "unnamed"
+  if (!sanitized || sanitized.trim() === "") {
+    return "unnamed";
+  }
+
   return sanitized;
 }
 import {
@@ -114,6 +134,20 @@ import {
   renderErrorsCallout,
   type CardData,
 } from "./renderer/index.js";
+
+/**
+ * Strip ANSI escape sequences and ASCII control characters from a string
+ * before sending it to the console. Used on any log line that may embed
+ * untrusted content (crate names, item paths, docstrings) from rustdoc JSON.
+ *
+ * Attack model: a malicious crate name could embed `\x1b[2J` to clear the
+ * terminal or `\n[ERROR] system compromised` to forge log lines. Replacing
+ * control bytes with `?` makes the message visible but inert.
+ */
+function sanitizeLogMessage(message: string): string {
+  // eslint-disable-next-line no-control-regex
+  return message.replace(/[\x00-\x08\x0b-\x1f\x7f]/g, "?");
+}
 
 /**
  * Checks if an enum variant is a plain/unit variant (no associated data).
@@ -245,11 +279,15 @@ export class RustdocGenerator {
 
   /**
    * Emit a warning with count limiting to prevent console flooding.
+   * Strips ANSI escape sequences and control characters from the message
+   * so crate/item names from untrusted rustdoc JSON can't manipulate the
+   * user's terminal (e.g. clearing the screen, repositioning the cursor,
+   * or injecting forged "[ERROR]" prefixes).
    */
   private warn(message: string): void {
     this.warningCount++;
     if (this.warningCount <= MAX_WARNINGS) {
-      console.warn(message);
+      console.warn(sanitizeLogMessage(message));
     } else if (this.warningCount === MAX_WARNINGS + 1) {
       console.warn(`Warning limit (${MAX_WARNINGS}) reached. Further warnings suppressed.`);
     }
@@ -332,8 +370,9 @@ export class RustdocGenerator {
       });
     }
 
-    // Process the root module recursively
-    this.processModule(rootItem, [], files);
+    // Process the root module recursively with visited set for circular reference detection
+    const visited = new Set<string>();
+    this.processModule(rootItem, [], files, 0, visited);
 
     return files;
   }
@@ -343,11 +382,12 @@ export class RustdocGenerator {
    *
    * This method performs a depth-first traversal of the module hierarchy:
    * 1. Validates recursion depth to prevent stack overflow
-   * 2. Collects and categorizes child items by kind (struct, enum, function, etc.)
-   * 3. Recursively processes submodules (incrementing depth)
-   * 4. Generates index page for the module (if enabled)
-   * 5. Generates meta.json for FumaDocs navigation
-   * 6. Generates individual item pages based on groupBy mode
+   * 2. Detects circular module references via visited set
+   * 3. Collects and categorizes child items by kind (struct, enum, function, etc.)
+   * 4. Recursively processes submodules (incrementing depth)
+   * 5. Generates index page for the module (if enabled)
+   * 6. Generates meta.json for FumaDocs navigation
+   * 7. Generates individual item pages based on groupBy mode
    *
    * Items are filtered using the configured filter function, and implementations
    * (impls) are skipped here since they're rendered with their associated types.
@@ -356,13 +396,21 @@ export class RustdocGenerator {
    * @param parentPath - Array of ancestor module names forming the path
    * @param files - Accumulator array for generated files (mutated)
    * @param depth - Current recursion depth for overflow protection (default: 0)
+   * @param visited - Set of visited module IDs for circular reference detection
    *
    * @remarks
    * - Module names are sanitized via `sanitizePath()` to prevent directory traversal
    * - Unknown item kinds are skipped with a warning for forward compatibility
    * - Missing item references are tracked and summarized at the end
+   * - Circular module references are detected and warned about
    */
-  private processModule(item: Item, parentPath: string[], files: GeneratedFile[], depth = 0): void {
+  private processModule(
+    item: Item,
+    parentPath: string[],
+    files: GeneratedFile[],
+    depth = 0,
+    visited = new Set<string>()
+  ): void {
     // Prevent stack overflow from deeply nested or circular module hierarchies
     if (depth > MAX_RECURSION_DEPTH) {
       this.warn(
@@ -371,6 +419,14 @@ export class RustdocGenerator {
       );
       return;
     }
+
+    // Detect circular module references
+    const itemKey = String(item.id);
+    if (visited.has(itemKey)) {
+      this.warn(`Circular module reference detected: ${item.name ?? itemKey}. Skipping.`);
+      return;
+    }
+    visited.add(itemKey);
 
     // Check for module type with proper warning for unexpected items
     if (!("module" in item.inner)) {
@@ -413,7 +469,7 @@ export class RustdocGenerator {
 
       // Recursively process submodules with incremented depth
       if (kind === "module") {
-        this.processModule(childItem, modulePath, files, depth + 1);
+        this.processModule(childItem, modulePath, files, depth + 1, visited);
         continue;
       }
 
@@ -854,49 +910,106 @@ export class RustdocGenerator {
    * - `raw_pointer`: Raw pointers - recurses into pointee type
    * - `impl_trait`: Impl trait bounds - extracts trait IDs
    * - `dyn_trait`: Dyn trait objects - extracts trait IDs
+   * - `function_pointer`: Function pointer types - recurses into params and return
+   * - `qualified_path`: Associated types - extracts self type references
    *
    * @param type - The rustdoc Type to extract references from
    * @param refs - Set to accumulate type IDs (mutated in place)
+   * @param depth - Current recursion depth for overflow protection (default: 0)
    *
    * @remarks
    * This method handles the discriminated union of Type variants defined in types.ts.
    * Unknown type variants are silently ignored for forward compatibility.
+   * Depth limiting prevents stack overflow from deeply nested generic types.
    */
-  private collectTypeReferences(type: Type, refs: Set<Id>): void {
+  private collectTypeReferences(type: Type, refs: Set<Id>, depth = 0): void {
+    // Prevent stack overflow from deeply nested types (e.g., Box<Box<Box<...>>>)
+    if (depth > MAX_TYPE_DEPTH) {
+      return;
+    }
+
     if ("resolved_path" in type) {
       refs.add(type.resolved_path.id);
-      // Also collect generic arguments
-      if (type.resolved_path.args) {
-        const args = type.resolved_path.args;
-        if ("angle_bracketed" in args) {
-          for (const arg of args.angle_bracketed.args) {
-            if ("type" in arg) {
-              this.collectTypeReferences(arg.type, refs);
-            }
-          }
-        }
-      }
+      this.collectPathArgReferences(type.resolved_path.args, refs, depth);
     } else if ("borrowed_ref" in type) {
-      this.collectTypeReferences(type.borrowed_ref.type, refs);
+      this.collectTypeReferences(type.borrowed_ref.type, refs, depth + 1);
     } else if ("tuple" in type) {
       for (const t of type.tuple) {
-        this.collectTypeReferences(t, refs);
+        this.collectTypeReferences(t, refs, depth + 1);
       }
     } else if ("slice" in type) {
-      this.collectTypeReferences(type.slice, refs);
+      this.collectTypeReferences(type.slice, refs, depth + 1);
     } else if ("array" in type) {
-      this.collectTypeReferences(type.array.type, refs);
+      this.collectTypeReferences(type.array.type, refs, depth + 1);
     } else if ("raw_pointer" in type) {
-      this.collectTypeReferences(type.raw_pointer.type, refs);
+      this.collectTypeReferences(type.raw_pointer.type, refs, depth + 1);
     } else if ("impl_trait" in type) {
       for (const bound of type.impl_trait) {
         if ("trait_bound" in bound) {
           refs.add(bound.trait_bound.trait.id);
+          // `impl Iterator<Item = Foo>` must also record `Foo`.
+          this.collectPathArgReferences(bound.trait_bound.trait.args, refs, depth);
         }
       }
     } else if ("dyn_trait" in type) {
       for (const polyTrait of type.dyn_trait.traits) {
         refs.add(polyTrait.trait.id);
+        // `dyn Foo<Bar>` must also record `Bar`.
+        this.collectPathArgReferences(polyTrait.trait.args, refs, depth);
+      }
+    } else if ("function_pointer" in type) {
+      // Traverse function pointer parameter and return types
+      const fnPtr = type.function_pointer;
+      for (const [, paramType] of fnPtr.sig.inputs) {
+        this.collectTypeReferences(paramType, refs, depth + 1);
+      }
+      if (fnPtr.sig.output) {
+        this.collectTypeReferences(fnPtr.sig.output, refs, depth + 1);
+      }
+    } else if ("qualified_path" in type) {
+      const qp = type.qualified_path;
+      // Self type: `<T as …>::Assoc` contributes `T`.
+      this.collectTypeReferences(qp.self_type, refs, depth + 1);
+      // Trait and its generic args: `<T as Trait<U>>::Assoc` must also
+      // contribute `Trait` and `U`. Previously both were dropped.
+      if (qp.trait) {
+        refs.add(qp.trait.id);
+        this.collectPathArgReferences(qp.trait.args, refs, depth);
+      }
+      // The qualified_path's own `args` (associated-type-on-assoc args,
+      // e.g. `<T as Iterator>::Item<K>`) must be traversed too.
+      this.collectPathArgReferences(qp.args, refs, depth);
+    }
+  }
+
+  /**
+   * Walk a `Path.args` structure and collect type references from every
+   * type-valued generic arg, associated-type constraint RHS, and the
+   * inputs/output of parenthesized (Fn-trait) arg forms.
+   */
+  private collectPathArgReferences(
+    args: GenericArgs | undefined,
+    refs: Set<Id>,
+    depth: number
+  ): void {
+    if (!args) return;
+    if ("angle_bracketed" in args) {
+      for (const arg of args.angle_bracketed.args) {
+        if ("type" in arg) {
+          this.collectTypeReferences(arg.type, refs, depth + 1);
+        }
+      }
+      for (const c of args.angle_bracketed.constraints ?? []) {
+        if ("equality" in c.binding && "type" in c.binding.equality) {
+          this.collectTypeReferences(c.binding.equality.type, refs, depth + 1);
+        }
+      }
+    } else if ("parenthesized" in args) {
+      for (const t of args.parenthesized.inputs) {
+        this.collectTypeReferences(t, refs, depth + 1);
+      }
+      if (args.parenthesized.output) {
+        this.collectTypeReferences(args.parenthesized.output, refs, depth + 1);
       }
     }
   }
@@ -1034,13 +1147,16 @@ export class RustdocGenerator {
         continue;
       }
 
-      // Match #[cfg(feature = "...")] or #[cfg(feature = '...')] or cfg_attr with feature
+      // Match cfg(feature = "...") and cfg_attr(feature = "...", ...)
+      // Also handles cfg_attr(not(feature = "..."), ...) and similar patterns
       // Support both double and single quotes for compatibility with different rustdoc versions
-      const doubleQuoteMatch = /cfg\s*\(\s*feature\s*=\s*"([^"]+)"\s*\)/.exec(attrStr);
+      const doubleQuoteMatch =
+        /(?:cfg|cfg_attr)\s*\(\s*(?:not\s*\(\s*)?feature\s*=\s*"([^"]+)"/.exec(attrStr);
       if (doubleQuoteMatch) {
         return doubleQuoteMatch[1];
       }
-      const singleQuoteMatch = /cfg\s*\(\s*feature\s*=\s*'([^']+)'\s*\)/.exec(attrStr);
+      const singleQuoteMatch =
+        /(?:cfg|cfg_attr)\s*\(\s*(?:not\s*\(\s*)?feature\s*=\s*'([^']+)'/.exec(attrStr);
       if (singleQuoteMatch) {
         return singleQuoteMatch[1];
       }
@@ -1598,10 +1714,22 @@ export class RustdocGenerator {
     header += formatGenerics(implDef.generics);
 
     if (implDef.trait) {
-      // Try to get the full trait name from paths
+      // Render the trait as a Type so its generic args (e.g. From<T>, TryFrom<U>)
+      // are preserved. Prefer the canonical full path from the paths table
+      // (e.g. core::convert::From) over the bare name.
       const traitPath = this.getPath(implDef.trait.id);
-      const traitName = traitPath ? traitPath.join("::") : implDef.trait.name;
-      header += ` ${traitName} for`;
+      const canonical = traitPath?.join("::");
+      const traitType: Type = {
+        resolved_path: {
+          path: canonical ?? getPathName(implDef.trait),
+          id: implDef.trait.id,
+          args: implDef.trait.args,
+        },
+      };
+      // `impl !Send for T` must not render as `impl Send for T` — the `!`
+      // flips the semantic.
+      const negate = implDef.is_negative ? "!" : "";
+      header += ` ${negate}${formatType(traitType)} for`;
     }
     header += ` ${formatType(implDef.for)}`;
 

@@ -16,7 +16,8 @@
  * - qualified_path: Associated type paths (<T as Trait>::Type)
  */
 
-import type { Type, GenericArg, GenericBound } from "../types.js";
+import { getPathName } from "../types.js";
+import type { Type, GenericArg, GenericBound, GenericParamDef } from "../types.js";
 
 /**
  * Format a Type as a human-readable string.
@@ -31,9 +32,12 @@ import type { Type, GenericArg, GenericBound } from "../types.js";
  * ```
  */
 export function formatType(type: Type): string {
+  // rustdoc occasionally emits `null` where a Type is expected (e.g. for a
+  // missing const generic default). Guard rather than crash.
+  if (type === null || type === undefined) return "_";
   if ("resolved_path" in type) {
     const path = type.resolved_path;
-    let result = path.name;
+    let result = getPathName(path);
     // Render generic arguments
     if (path.args) {
       if ("angle_bracketed" in path.args) {
@@ -79,7 +83,9 @@ export function formatType(type: Type): string {
     return type.generic;
   }
   if ("primitive" in type) {
-    return type.primitive;
+    // Rustdoc emits the never type as the primitive string "never"; render it
+    // using the idiomatic Rust syntax `!`.
+    return type.primitive === "never" ? "!" : type.primitive;
   }
   if ("tuple" in type) {
     if (type.tuple.length === 0) return "()";
@@ -122,10 +128,10 @@ export function formatType(type: Type): string {
   if ("dyn_trait" in type) {
     const dyn = type.dyn_trait;
     if (dyn.traits.length > 0) {
-      // Format trait bounds with generic args
+      // Format trait bounds with generic args, preserving any higher-ranked
+      // trait bound binders (`for<'a>`).
       const traits = dyn.traits.map((t) => {
-        let name = t.trait.name;
-        // Add generic args if present
+        let name = formatHrtb(t.generic_params) + getPathName(t.trait);
         if (t.trait.args && "angle_bracketed" in t.trait.args) {
           const args = t.trait.args.angle_bracketed.args;
           if (args.length > 0) {
@@ -152,7 +158,9 @@ export function formatType(type: Type): string {
   if ("function_pointer" in type) {
     const fp = type.function_pointer;
     const params = fp.sig.inputs.map(([, t]) => formatType(t)).join(", ");
-    let result = `fn(${params})`;
+    // Preserve `for<'a>` binders on higher-ranked fn pointers like
+    // `for<'a> fn(&'a T) -> &'a U`.
+    let result = `${formatHrtb(fp.generic_params)}fn(${params})`;
     if (fp.sig.output) {
       result += ` -> ${formatType(fp.sig.output)}`;
     }
@@ -160,7 +168,8 @@ export function formatType(type: Type): string {
   }
   if ("qualified_path" in type) {
     const qp = type.qualified_path;
-    return `<${formatType(qp.self_type)} as ${qp.trait?.name ?? "?"}>::${qp.name}`;
+    const traitName = qp.trait ? getPathName(qp.trait) : "?";
+    return `<${formatType(qp.self_type)} as ${traitName}>::${qp.name}`;
   }
   if ("infer" in type) {
     return "_";
@@ -210,11 +219,46 @@ export function formatGenericArg(arg: GenericArg): string {
  */
 export function formatGenericBound(bound: GenericBound): string {
   if ("trait_bound" in bound) {
-    return bound.trait_bound.trait.name;
+    const tb = bound.trait_bound;
+    // Modifier prefix: `?Sized`, `~const Drop`, etc. Dropping this inverts
+    // the meaning of the bound to a reader.
+    const modifierPrefix =
+      tb.modifier === "maybe" ? "?" : tb.modifier === "maybe_const" ? "~const " : "";
+    const hrtb = formatHrtb(tb.generic_params);
+    let name = getPathName(tb.trait);
+    // Preserve angle-bracketed generic args on the trait, e.g.
+    // `AsRef<str>` or `Iterator<Item = u32>`.
+    if (tb.trait.args && "angle_bracketed" in tb.trait.args) {
+      const args = tb.trait.args.angle_bracketed.args;
+      const constraints = tb.trait.args.angle_bracketed.constraints ?? [];
+      const formatted = [
+        ...args.map((a) => formatGenericArg(a)),
+        ...constraints.map((c) => c.name),
+      ];
+      if (formatted.length > 0) name += `<${formatted.join(", ")}>`;
+    }
+    return `${hrtb}${modifierPrefix}${name}`;
   }
   if ("outlives" in bound) {
     // Lifetimes in rustdoc JSON already include the leading '
     return bound.outlives.startsWith("'") ? bound.outlives : `'${bound.outlives}`;
   }
   return "";
+}
+
+/**
+ * Format a list of HRTB generic params as a `for<...> ` prefix. Returns
+ * `""` when the list is empty. Lifetime params are rendered with a leading
+ * `'` (matching how rustdoc actually stores them); type and const params in
+ * an HRTB are vanishingly rare but handled by falling back to the name.
+ */
+function formatHrtb(params: GenericParamDef[] | undefined): string {
+  if (!params || params.length === 0) return "";
+  const parts = params.map((p) => {
+    if ("lifetime" in p.kind) {
+      return p.name.startsWith("'") ? p.name : `'${p.name}`;
+    }
+    return p.name;
+  });
+  return `for<${parts.join(", ")}> `;
 }

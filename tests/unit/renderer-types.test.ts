@@ -146,6 +146,88 @@ describe("formatType", () => {
       expect(formatType(type)).toBe("String");
     });
 
+    it("formats path using v57 `path` field instead of `name`", () => {
+      const type: Type = {
+        resolved_path: { path: "String", id: 1, args: undefined },
+      };
+      expect(formatType(type)).toBe("String");
+    });
+
+    it("strips leading `$crate::` from derive-macro paths", () => {
+      const type: Type = {
+        resolved_path: { path: "$crate::fmt::Formatter", id: 1, args: undefined },
+      };
+      expect(formatType(type)).toBe("fmt::Formatter");
+    });
+
+    it("renders the never primitive `!` instead of the literal string", () => {
+      const type: Type = { primitive: "never" };
+      expect(formatType(type)).toBe("!");
+    });
+
+    it("renders for<'a> fn() binders on higher-ranked fn pointers", () => {
+      const type: Type = {
+        function_pointer: {
+          sig: { inputs: [["x", { generic: "T" }]], output: undefined },
+          generic_params: [{ name: "'a", kind: { lifetime: { outlives: [] } } }],
+          header: { is_const: false, is_unsafe: false, is_async: false, abi: "Rust" },
+        },
+      };
+      expect(formatType(type)).toBe("for<'a> fn(T)");
+    });
+
+    it("renders for<'a> on dyn Trait HRTBs", () => {
+      const type: Type = {
+        dyn_trait: {
+          traits: [
+            {
+              trait: { path: "Fn", id: 1, args: undefined },
+              generic_params: [{ name: "'a", kind: { lifetime: { outlives: [] } } }],
+            },
+          ],
+          lifetime: undefined,
+        },
+      };
+      expect(formatType(type)).toBe("dyn for<'a> Fn");
+    });
+  });
+
+  describe("formatGenericBound", () => {
+    it("renders the ?Sized modifier as ?", async () => {
+      const { formatGenericBound } = await import("../../src/renderer/types.js");
+      expect(
+        formatGenericBound({
+          trait_bound: {
+            trait: { path: "Sized", id: 1, args: undefined },
+            generic_params: [],
+            modifier: "maybe",
+          },
+        })
+      ).toBe("?Sized");
+    });
+
+    it("preserves angle-bracketed args on a trait bound", async () => {
+      const { formatGenericBound } = await import("../../src/renderer/types.js");
+      expect(
+        formatGenericBound({
+          trait_bound: {
+            trait: {
+              path: "AsRef",
+              id: 1,
+              args: {
+                angle_bracketed: {
+                  args: [{ type: { primitive: "str" } }],
+                  constraints: [],
+                },
+              },
+            },
+            generic_params: [],
+            modifier: "none",
+          },
+        })
+      ).toBe("AsRef<str>");
+    });
+
     it("formats path with angle-bracketed args", () => {
       const type: Type = {
         resolved_path: {

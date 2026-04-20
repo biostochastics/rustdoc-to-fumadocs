@@ -1,6 +1,6 @@
 {
   "name": "rustdoc-to-fumadocs",
-  "version": "0.2.0",
+  "version": "0.3.1",
   "description": "Convert rustdoc JSON to Fumadocs-compatible MDX files",
   "keywords": [
     "rustdoc",
@@ -59,6 +59,7 @@
     "prepare": "husky"
   },
   "dependencies": {
+    "smol-toml": "^1.6.1",
     "yaml": "^2.3.4",
     "zod": "^3.25.76"
   },

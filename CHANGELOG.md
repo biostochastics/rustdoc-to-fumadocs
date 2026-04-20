@@ -4,23 +4,54 @@ All notable changes to rustdoc-to-fumadocs will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [Unreleased]
+## [0.3.1] - 2026-04-20
+
+### Added
+
+- **Cargo workspace mode** (`--workspace [dir]`, alias `-w`): generate docs for every member of a workspace in one run. Each member's output lives in `<output>/<crate_name>/`; a top-level `index.mdx` and `meta.json` link them. Supports the `crates/*` glob form and the `exclude` list.
+- **Async CLI I/O**: `src/cli.ts` uses `fs/promises` with bounded parallelism (16 concurrent writes) to avoid blocking the event loop and EMFILE on large crates.
+- **Testable `run()` entrypoint**: `parseArgs(argv)`, `run(argv, streams)`, and a `CliStreams` interface let the CLI be unit-tested without spawning a subprocess.
 
 ### Changed
 
-- **Improved error handling**: `generate()` now throws structured `RustdocError` with codes, hints, and context instead of raw `Error`
-- **Better warning messages**: Missing item references now include module context and show summary counts
-- **Refactored implementation filtering**: Split complex `getImplementations()` into focused helper methods for better maintainability
-- **Enhanced path sanitization**: Empty strings return `"unnamed"`, handles Unicode normalization, and truncates to filesystem limits (255 chars)
-- **Centralized kind ordering**: `KIND_ORDER` constant used consistently across module index and meta.json generation
-- **Improved type predicates**: Added proper JSDoc and type predicate return types for `isPlainVariant()`, `isUnitStruct()`, etc.
+- **Error handling**: `generate()` throws structured `RustdocError` with codes, hints, and context.
+- **Warnings**: Missing item references include module context and summary counts; warning volume capped at `MAX_WARNINGS=100`.
+- **Implementation filtering**: `getImplementations()` split into focused helpers.
+- **Path sanitization**: Empty segments become `"unnamed"`; Unicode normalization applied; truncated to 255 bytes preserving the extension.
+- **Tab content indentation**: Reduced from 4 spaces to 0 so MDX doesn't render tab bodies as code blocks.
+- **Feature-gate extraction**: Also matches `cfg_attr(feature = "…")` and the negated form.
 
 ### Fixed
 
-- **Silent skipping in processModule()**: Now warns when encountering non-module items with meaningful content
-- **Root module validation**: Uses string conversion for format 56+ numeric ID compatibility
-- **Field type fallback**: Returns `"unknown"` instead of `"..."` with warning for unexpected field structures
-- **CLI logger in JSON mode**: Structured logger pattern replaces empty function anti-pattern
+- **Rustdoc format v57 rendering**: The `Path.name` → `Path.path` rename made every resolved type render as the literal string `undefined`. A new `getPathName()` helper reads either field.
+- **Idiomatic `&self`**: Function signatures render `&self` / `&'a self` / `&mut self` instead of `self: &Self`.
+- **No space before `(`**: `fn encode(x: T)` instead of `fn encode (x: T)`.
+- **Trait generic args on impl headers**: `impl From<T> for U` is now preserved instead of being truncated to `impl From for U`.
+- **Negative trait impls**: `impl !Send for T` was silently dropping the `!`.
+- **`?Sized` / `~const` modifiers** are preserved in trait bounds.
+- **Const generics and default generic parameters** render with their types and defaults (`<const N: usize>`, `<T: Clone = String>`).
+- **Higher-ranked trait bounds (`for<'a>`)** are preserved on function pointers, `dyn Trait`, and where-clause predicates.
+- **Never primitive** renders as `!` instead of the literal string `never`.
+- **`$crate::` prefixes** from derive-macro expansions are stripped (e.g. `$crate::fmt::Formatter` → `fmt::Formatter`).
+- **Lifetime outlives bounds** inside `<…>` are preserved (`<'a: 'b>`).
+- **Cross-reference completeness**: `collectTypeReferences()` now recurses into `qualified_path.args`, `qualified_path.trait.args`, `impl Trait` / `dyn Trait` generic args, and associated-type equality constraints. Previously a type that appeared only inside `<T as Trait<U>>::Assoc` would drop `U` and `Trait`.
+- **`mkdir` errors** in `writeFilesParallel` are wrapped as `OUTPUT_WRITE_FAILED` instead of surfacing as uncaught EACCES.
+- **Silent skipping in `processModule()`**: now warns when encountering non-module items with meaningful content.
+- **Root module validation**: string conversion for format v56+ numeric IDs.
+- **Field type fallback**: returns `"unknown"` with warning instead of `"..."` for unexpected structures.
+- **`VisibilitySchema`**: accepts both string and numeric IDs for `restricted.parent`.
+- **Windows path handling**: `validateOutputPath()` uses `path.sep` for the prefix-attack guard.
+- **`Cargo.toml` crate-name regex**: supports both single and double quotes.
+- **Type reference depth**: `collectTypeReferences()` caps at `MAX_TYPE_DEPTH=50` to prevent stack overflow.
+- **Circular modules**: `processModule()` tracks visited modules and warns.
+- **Empty `sanitizePath` result**: returns `"unnamed"` when sanitization yields an empty string (e.g. `"../../"`).
+
+### Security
+
+- **Log-injection guard**: `RustdocGenerator.warn()` strips ANSI escape sequences and ASCII control bytes from messages, so crate or item names from rustdoc JSON can't manipulate the user's terminal or forge log lines.
+- **Workspace member escape**: `expandMemberPattern()` refuses absolute paths so a malformed manifest can't escape the workspace root.
+- **Per-member size cap**: Workspace mode enforces the same `MAX_INPUT_SIZE_BYTES` (100 MB) cap per member as the single-crate path.
+- **Frontmatter safety**: Top-level workspace `index.mdx` frontmatter uses the `yaml` package; markdown inline-code spans escape backticks; member link hrefs are URI-encoded.
 
 ## [0.2.0] - 2026-02-04
 

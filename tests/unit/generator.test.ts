@@ -101,5 +101,55 @@ describe("sanitizePath", () => {
       expect(safe).not.toContain("<");
       expect(safe).not.toContain(">");
     });
+
+    it("strips embedded null bytes", () => {
+      const result = sanitizePath("file\x00name.mdx");
+      expect(result).not.toContain("\x00");
+      expect(result).toBe("file_name.mdx");
+    });
+
+    it("strips full C0 control range", () => {
+      for (let code = 0; code <= 0x1f; code++) {
+        const result = sanitizePath(`a${String.fromCharCode(code)}b`);
+        expect(result).toBe("a_b");
+      }
+    });
+
+    it("truncates extremely long names to the 255-byte filesystem limit", () => {
+      const result = sanitizePath("a".repeat(1000));
+      expect(result.length).toBeLessThanOrEqual(255);
+      expect(result.length).toBe(255);
+    });
+
+    it("preserves a short file extension when truncating", () => {
+      const base = "a".repeat(300);
+      const result = sanitizePath(`${base}.mdx`);
+      expect(result.endsWith(".mdx")).toBe(true);
+      expect(result.length).toBeLessThanOrEqual(255);
+    });
+
+    it("normalizes decomposed Unicode to NFC", () => {
+      // "café" expressed as 'e' + combining acute (decomposed form)
+      const decomposed = "cafe\u0301";
+      const composed = "caf\u00e9";
+      expect(decomposed.normalize("NFC")).toBe(composed);
+      expect(sanitizePath(decomposed)).toBe(composed);
+    });
+
+    it("handles Unicode input without stripping multi-byte characters", () => {
+      expect(sanitizePath("モジュール")).toBe("モジュール");
+      expect(sanitizePath("🚀launch")).toBe("🚀launch");
+    });
+
+    it("handles a mix of traversal + special + control chars together", () => {
+      const input = "../foo:bar<baz>\x01.mdx";
+      const result = sanitizePath(input);
+      expect(result).not.toContain("..");
+      expect(result).not.toContain("/");
+      expect(result).not.toContain(":");
+      expect(result).not.toContain("<");
+      expect(result).not.toContain(">");
+      expect(result).not.toContain("\x01");
+    });
   });
 });

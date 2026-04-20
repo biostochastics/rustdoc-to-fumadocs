@@ -52,6 +52,12 @@ export {
 } from "./components.js";
 
 /**
+ * Maximum number of warnings to store in RenderContext.
+ * Prevents unbounded memory growth from corrupted input.
+ */
+const MAX_WARNINGS = 100;
+
+/**
  * FumaDocs components that can be used in generated MDX.
  */
 export type FumaDocsComponent = "Callout" | "Tabs" | "Tab" | "Cards" | "Card";
@@ -143,22 +149,28 @@ export class RenderContext {
 
   /**
    * Get an item from the crate index by ID.
+   * Handles both string and numeric IDs (format v56+ uses numeric).
    *
-   * @param id - The item ID
+   * @param id - The item ID (string or number)
    * @returns The item if found, undefined otherwise
    */
   getItem(id: Id): Item | undefined {
-    return this.crate.index[id];
+    // JSON object keys are always strings, so convert numeric IDs
+    const key = String(id);
+    return this.crate.index[key];
   }
 
   /**
    * Get the path segments for an item by ID.
+   * Handles both string and numeric IDs (format v56+ uses numeric).
    *
-   * @param id - The item ID
+   * @param id - The item ID (string or number)
    * @returns Array of path segments, or undefined if not found
    */
   getPath(id: Id): string[] | undefined {
-    return this.crate.paths[id]?.path;
+    // JSON object keys are always strings, so convert numeric IDs
+    const key = String(id);
+    return this.crate.paths[key]?.path;
   }
 
   /**
@@ -253,10 +265,14 @@ export class RenderContext {
 
   /**
    * Record a warning that occurred during generation.
+   * Warnings are limited to MAX_WARNINGS to prevent unbounded memory growth.
    *
    * @param warning - The warning to record
    */
   warn(warning: GenerationWarning): void {
+    if (this.warnings.length >= MAX_WARNINGS) {
+      return; // Silently drop warnings beyond the limit
+    }
     this.warnings.push(warning);
   }
 

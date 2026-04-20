@@ -116,13 +116,14 @@ export function renderTabs(items: string[], contents: Map<string, string>): stri
   const itemsExpr = JSON.stringify(items);
 
   // Build Tab components
+  // Use 2-space indentation to avoid MDX treating content as code blocks (4+ spaces)
   const tabComponents = items
     .map((item) => {
       const tabContent = contents.get(item) ?? "";
       // Use JSON.stringify for value prop to escape special characters
-      return `  <Tab value={${JSON.stringify(item)}}>
-${indent(tabContent, 4)}
-  </Tab>`;
+      return `<Tab value={${JSON.stringify(item)}}>
+${tabContent}
+</Tab>`;
     })
     .join("\n");
 
