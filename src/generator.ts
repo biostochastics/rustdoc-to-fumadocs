@@ -127,6 +127,20 @@ import {
 } from "./renderer/index.js";
 
 /**
+ * Strip ANSI escape sequences and ASCII control characters from a string
+ * before sending it to the console. Used on any log line that may embed
+ * untrusted content (crate names, item paths, docstrings) from rustdoc JSON.
+ *
+ * Attack model: a malicious crate name could embed `\x1b[2J` to clear the
+ * terminal or `\n[ERROR] system compromised` to forge log lines. Replacing
+ * control bytes with `?` makes the message visible but inert.
+ */
+function sanitizeLogMessage(message: string): string {
+  // eslint-disable-next-line no-control-regex
+  return message.replace(/[\x00-\x08\x0b-\x1f\x7f]/g, "?");
+}
+
+/**
  * Checks if an enum variant is a plain/unit variant (no associated data).
  *
  * Handles format version differences:
@@ -256,11 +270,15 @@ export class RustdocGenerator {
 
   /**
    * Emit a warning with count limiting to prevent console flooding.
+   * Strips ANSI escape sequences and control characters from the message
+   * so crate/item names from untrusted rustdoc JSON can't manipulate the
+   * user's terminal (e.g. clearing the screen, repositioning the cursor,
+   * or injecting forged "[ERROR]" prefixes).
    */
   private warn(message: string): void {
     this.warningCount++;
     if (this.warningCount <= MAX_WARNINGS) {
-      console.warn(message);
+      console.warn(sanitizeLogMessage(message));
     } else if (this.warningCount === MAX_WARNINGS + 1) {
       console.warn(`Warning limit (${MAX_WARNINGS}) reached. Further warnings suppressed.`);
     }

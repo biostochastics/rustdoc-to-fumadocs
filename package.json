@@ -59,6 +59,7 @@
     "prepare": "husky"
   },
   "dependencies": {
+    "smol-toml": "^1.6.1",
     "yaml": "^2.3.4",
     "zod": "^3.25.76"
   },

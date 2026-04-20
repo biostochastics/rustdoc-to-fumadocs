@@ -19,6 +19,13 @@ import {
   inputReadError,
   outputWriteError,
 } from "./errors.js";
+import {
+  loadWorkspace,
+  findMemberRustdocJson,
+  renderWorkspaceMeta,
+  renderWorkspaceIndex,
+  type WorkspaceMember,
+} from "./workspace.js";
 
 /**
  * Maximum input file size in bytes (100MB).
@@ -68,6 +75,16 @@ export function validateOutputPath(outputDir: string, filePath: string): string 
 export interface CliArgs {
   input?: string;
   crate?: string;
+  /**
+   * If set, treat the given directory as a Cargo workspace root. The tool will
+   * read `<workspace>/Cargo.toml`, enumerate `[workspace].members`, and
+   * generate docs for every member into `<output>/<member_name>/`.
+   *
+   * When provided without a value (e.g. bare `--workspace`), the current
+   * working directory is used. `--input` and `--crate` are ignored in this
+   * mode.
+   */
+  workspace?: string;
   output: string;
   baseUrl: string;
   groupBy: "module" | "kind" | "flat";
@@ -202,6 +219,19 @@ export function parseArgs(argv: string[]): CliArgs {
       case "--json":
         result.json = true;
         break;
+      case "-w":
+      case "--workspace": {
+        // Accept an optional directory argument. If the next token is another
+        // flag or absent, default to "." (cwd).
+        const next = argv[i + 1];
+        if (next !== undefined && !next.startsWith("-")) {
+          result.workspace = next;
+          i++;
+        } else {
+          result.workspace = ".";
+        }
+        break;
+      }
       default:
         // Positional argument - treat as input
         if (!result.input && !arg.startsWith("-")) {
@@ -223,6 +253,9 @@ USAGE:
 OPTIONS:
   -i, --input <path>      Path to rustdoc JSON file
   -c, --crate <name>      Crate name (will look in target/doc/<name>.json)
+  -w, --workspace [dir]   Treat <dir> (or cwd) as a Cargo workspace root and
+                          generate docs for every [workspace].members entry.
+                          Overrides --input/--crate.
   -o, --output <dir>      Output directory (default: content/docs/api)
   -b, --base-url <url>    Base URL for generated docs (default: /docs/api)
   -g, --group-by <mode>   Group items by: module, kind, or flat (default: module)
@@ -240,6 +273,10 @@ EXAMPLES:
 
   # Auto-detect from crate name
   rustdoc-to-fumadocs --crate my_crate --output docs/api
+
+  # Whole Cargo workspace (one output subdir per member crate)
+  cargo doc --workspace --no-deps  # with the JSON RUSTDOCFLAGS
+  rustdoc-to-fumadocs --workspace --output docs/api
 
   # Dry run to preview output
   rustdoc-to-fumadocs --crate my_crate --dry-run
@@ -378,6 +415,218 @@ async function loadRustdocJsonWithWarnings(
 }
 
 /**
+ * Workspace mode: generate docs for every member of a Cargo workspace.
+ *
+ * Layout: each member's output goes into `<output>/<member_name>/...` (the
+ * single-crate generator already namespaces under the crate name, so we just
+ * feed it the same output directory per member and let it fall out).
+ * A top-level `meta.json` + `index.mdx` are added for workspace navigation.
+ */
+async function runWorkspace(
+  args: CliArgs,
+  streams: CliStreams,
+  log: (msg: string) => void,
+  workspaceDir: string
+): Promise<number> {
+  const workspaceTomlPath = resolve(workspaceDir, "Cargo.toml");
+  let ws;
+  try {
+    ws = await loadWorkspace(workspaceTomlPath);
+  } catch (err) {
+    return emitError(err, args, streams);
+  }
+
+  if (ws.members.length === 0) {
+    return emitError(
+      new RustdocError(
+        ErrorCode.INVALID_ITEM_STRUCTURE,
+        `Workspace at ${workspaceTomlPath} has no [workspace].members (after exclusions).`,
+        {
+          hint: "Add at least one crate to the workspace members list, or omit --workspace.",
+        }
+      ),
+      args,
+      streams
+    );
+  }
+
+  log(
+    `Workspace: ${ws.rootDir} (${ws.members.length} member${ws.members.length === 1 ? "" : "s"})`
+  );
+
+  const targetDir = resolve(ws.rootDir, "target");
+  const outputDir = resolve(args.output);
+  const allFiles: { path: string; content: string }[] = [];
+  const generated: WorkspaceMember[] = [];
+  const skipped: { name: string; reason: string }[] = [];
+
+  for (const member of ws.members) {
+    const jsonPath = await findMemberRustdocJson(member.name, targetDir);
+    if (!jsonPath) {
+      skipped.push({
+        name: member.name,
+        reason: `no rustdoc JSON at target/doc/${member.name}.json`,
+      });
+      continue;
+    }
+    log(`  ${member.name}: ${jsonPath}`);
+
+    let content: string;
+    try {
+      content = await readFile(jsonPath, "utf-8");
+    } catch (err) {
+      skipped.push({
+        name: member.name,
+        reason: `read failed: ${(err as Error).message}`,
+      });
+      continue;
+    }
+    let parsed: unknown;
+    try {
+      parsed = parseJsonSafe(content, jsonPath);
+    } catch (err) {
+      skipped.push({
+        name: member.name,
+        reason: `JSON parse failed: ${(err as Error).message}`,
+      });
+      continue;
+    }
+    let crate;
+    try {
+      crate = validateRustdocJson(parsed).crate;
+    } catch (err) {
+      skipped.push({
+        name: member.name,
+        reason: `validation failed: ${(err as Error).message}`,
+      });
+      continue;
+    }
+
+    const options: GeneratorOptions = {
+      output: outputDir,
+      baseUrl: args.baseUrl,
+      generateIndex: !args.noIndex,
+      groupBy: args.groupBy,
+      useTabs: !args.noTabs,
+      useCards: !args.noCards,
+    };
+    const generator = new RustdocGenerator(crate, options);
+    const files = generator.generate();
+    allFiles.push(...files);
+    // Record the crate's own root name (underscored, matching the output
+    // directory the generator emits) rather than the Cargo package name,
+    // so the top-level meta.json references the actual on-disk dirs.
+    const rootName = crate.index[crate.root]?.name ?? member.name;
+    generated.push({ ...member, name: rootName });
+  }
+
+  if (generated.length === 0) {
+    return emitError(
+      new RustdocError(
+        ErrorCode.INPUT_READ_FAILED,
+        `No workspace members produced output. All ${ws.members.length} members were skipped.`,
+        {
+          hint: 'Run `cargo doc` with the JSON rustdoc flags before invoking --workspace. Example:\n  RUSTC_BOOTSTRAP=1 RUSTDOCFLAGS="-Z unstable-options --output-format json" cargo doc --workspace --no-deps',
+          context: { skipped },
+        }
+      ),
+      args,
+      streams
+    );
+  }
+
+  // Top-level workspace index + meta.json.
+  const workspaceName = ws.rootDir.split(sep).filter(Boolean).pop() ?? "workspace";
+  allFiles.push({
+    path: "meta.json",
+    content: renderWorkspaceMeta(generated, "API"),
+  });
+  allFiles.push({
+    path: "index.mdx",
+    content: renderWorkspaceIndex(workspaceName, generated),
+  });
+
+  for (const s of skipped) {
+    streams.stderr(`Warning: skipped ${s.name}: ${s.reason}\n`);
+  }
+
+  return writeAndReport(args, streams, log, outputDir, allFiles, {
+    totalMembers: generated.length,
+    skippedMembers: skipped.length,
+  });
+}
+
+/**
+ * Shared file-writing path used by both single-crate and workspace modes.
+ * Handles dry-run, JSON output, progress, and the actual parallel write.
+ */
+async function writeAndReport(
+  args: CliArgs,
+  streams: CliStreams,
+  log: (msg: string) => void,
+  outputDir: string,
+  files: { path: string; content: string }[],
+  extra?: { totalMembers?: number; skippedMembers?: number }
+): Promise<number> {
+  const stats = {
+    totalFiles: files.length,
+    totalBytes: files.reduce((sum, f) => sum + f.content.length, 0),
+    mdxFiles: files.filter((f) => f.path.endsWith(".mdx")).length,
+    metaFiles: files.filter((f) => f.path.endsWith(".json")).length,
+  };
+
+  if (args.json) {
+    const output: JsonOutput = {
+      success: true,
+      files: files.map((f) => ({ path: f.path, size: f.content.length })),
+      stats,
+    };
+    streams.stdout(JSON.stringify(output, null, 2) + "\n");
+    return 0;
+  }
+
+  if (args.dryRun) {
+    streams.stdout(`\n--- DRY RUN ---\n`);
+    streams.stdout(`Would write ${stats.totalFiles} files (${stats.totalBytes} bytes)\n`);
+    if (extra?.totalMembers !== undefined) {
+      streams.stdout(`Workspace members generated: ${extra.totalMembers}\n`);
+      if (extra.skippedMembers)
+        streams.stdout(`Workspace members skipped: ${extra.skippedMembers}\n`);
+    }
+    streams.stdout(`--- END DRY RUN ---\n`);
+    return 0;
+  }
+
+  log(`Generating ${files.length} files to: ${outputDir}`);
+
+  const writable: { path: string; absolutePath: string; content: string }[] = [];
+  let skippedEmpty = 0;
+  for (const file of files) {
+    if (!file.content.trim() && !file.path.endsWith(".json")) {
+      skippedEmpty++;
+      continue;
+    }
+    writable.push({
+      path: file.path,
+      absolutePath: validateOutputPath(outputDir, file.path),
+      content: file.content,
+    });
+  }
+
+  try {
+    await writeFilesParallel(writable, WRITE_CONCURRENCY, (_written, path) => {
+      if (args.verbose) streams.stdout(`  -> ${path}\n`);
+    });
+  } catch (err) {
+    return emitError(err, args, streams);
+  }
+
+  if (skippedEmpty > 0) log(`Skipped ${skippedEmpty} empty file(s)`);
+  log("Done!");
+  return 0;
+}
+
+/**
  * Runs the CLI and returns an exit code. Designed to be testable: pure
  * function-style (no `process.exit`), accepts argv and stream injection.
  */
@@ -396,6 +645,17 @@ export async function run(argv: string[], streams: CliStreams = defaultStreams):
   if (args.help) {
     streams.stdout(helpText());
     return 0;
+  }
+
+  // In JSON mode, info messages are suppressed but errors still go to stderr.
+  const topLog: (msg: string) => void = args.json
+    ? () => undefined
+    : (msg) => streams.stdout(msg + "\n");
+
+  // Workspace mode: delegate entirely. --input and --crate are ignored here
+  // by design, since workspace iteration sources its inputs from Cargo.toml.
+  if (args.workspace !== undefined) {
+    return runWorkspace(args, streams, topLog, resolve(args.workspace));
   }
 
   // Determine input path

@@ -347,3 +347,78 @@ describe("run() - --crate auto-detection", () => {
     expect(code).toBe(0);
   });
 });
+
+describe("run() - --workspace mode", () => {
+  let tmp: string;
+
+  beforeEach(async () => {
+    tmp = await mkdtemp(join(tmpdir(), "rd2fd-cli-ws-"));
+  });
+
+  afterEach(async () => {
+    await rm(tmp, { recursive: true, force: true });
+  });
+
+  it("generates docs for every workspace member with a rustdoc JSON", async () => {
+    const { mkdir: mk } = await import("node:fs/promises");
+    // Set up a workspace with one member backed by the minimal fixture.
+    await mk(join(tmp, "crates", "testy"), { recursive: true });
+    await writeFile(join(tmp, "Cargo.toml"), `[workspace]\nmembers = ["crates/testy"]\n`, "utf-8");
+    await writeFile(
+      join(tmp, "crates", "testy", "Cargo.toml"),
+      `[package]\nname = "testy"\nversion = "0.1.0"\n`,
+      "utf-8"
+    );
+    const content = await readFile(fixturePath, "utf-8");
+    await mk(join(tmp, "target", "doc"), { recursive: true });
+    // The fixture's root crate name is "test_crate" — that's the dir the
+    // generator will emit under, and it's what the top-level meta.json
+    // should link to (not the Cargo package name "testy").
+    await writeFile(join(tmp, "target", "doc", "testy.json"), content, "utf-8");
+
+    const { streams } = captureStreams();
+    const outDir = join(tmp, "out");
+    const code = await run(["--workspace", tmp, "--output", outDir], streams);
+    expect(code).toBe(0);
+
+    // Top-level files exist.
+    const topMeta = JSON.parse(await readFile(join(outDir, "meta.json"), "utf-8")) as {
+      pages: string[];
+    };
+    expect(topMeta.pages[0]).toBe("index");
+    // Meta should reference the crate's root name, not the Cargo package name.
+    expect(topMeta.pages).toContain("...test_crate");
+    const indexContent = await readFile(join(outDir, "index.mdx"), "utf-8");
+    expect(indexContent).toContain("[`test_crate`](./test_crate)");
+    expect(indexContent).toContain("1 crate");
+  });
+
+  it("returns a non-zero exit when no member has a rustdoc JSON", async () => {
+    const { mkdir: mk } = await import("node:fs/promises");
+    await mk(join(tmp, "crates", "ghost"), { recursive: true });
+    await writeFile(join(tmp, "Cargo.toml"), `[workspace]\nmembers = ["crates/ghost"]\n`, "utf-8");
+    await writeFile(
+      join(tmp, "crates", "ghost", "Cargo.toml"),
+      `[package]\nname = "ghost"\nversion = "0.1.0"\n`,
+      "utf-8"
+    );
+
+    const { streams, stderr } = captureStreams();
+    const code = await run(["--workspace", tmp, "--output", join(tmp, "out")], streams);
+    expect(code).toBe(1);
+    expect(stderr()).toMatch(/No workspace members produced output/);
+  });
+
+  it("reports a clear error when --workspace points at a non-workspace Cargo.toml", async () => {
+    await writeFile(
+      join(tmp, "Cargo.toml"),
+      `[package]\nname = "solo"\nversion = "0.1.0"\n`,
+      "utf-8"
+    );
+
+    const { streams, stderr } = captureStreams();
+    const code = await run(["--workspace", tmp, "--output", join(tmp, "out")], streams);
+    expect(code).toBe(1);
+    expect(stderr()).toMatch(/no \[workspace\] table/);
+  });
+});
