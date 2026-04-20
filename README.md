@@ -2,7 +2,8 @@
 
 <p align="center">
   <strong>Convert Rust API documentation to beautiful FumaDocs sites</strong><br>
-  <em>Transform rustdoc JSON output into FumaDocs v14+ compatible MDX files with full component support</em>
+  <em>Transform rustdoc JSON output into FumaDocs-compatible MDX files with full component support.<br>
+  Verified end-to-end against FumaDocs v16; schema-compatible with v14–v16+.</em>
 </p>
 
 <p align="center">
@@ -16,7 +17,7 @@
 <p align="center">
   <a href="https://www.typescriptlang.org/"><img src="https://img.shields.io/badge/TypeScript-5.3+-blue" alt="TypeScript: 5.3+"></a>
   <a href="https://nodejs.org/"><img src="https://img.shields.io/badge/Node.js-18+-green" alt="Node.js: 18+"></a>
-  <a href="https://fumadocs.dev/"><img src="https://img.shields.io/badge/FumaDocs-v14+-purple" alt="FumaDocs: v14+"></a>
+  <a href="https://fumadocs.dev/"><img src="https://img.shields.io/badge/FumaDocs-v14%E2%80%93v16%2B-purple" alt="FumaDocs: v14–v16+"></a>
   <a href="https://eslint.org/"><img src="https://img.shields.io/badge/ESLint-v9-4B32C3" alt="ESLint: v9"></a>
   <a href="https://prettier.io/"><img src="https://img.shields.io/badge/code_style-Prettier-ff69b4" alt="Code style: Prettier"></a>
   <a href="https://vitest.dev/"><img src="https://img.shields.io/badge/tests-Vitest-yellow" alt="Tests: Vitest"></a>
@@ -73,17 +74,17 @@ rustdoc-to-fumadocs converts Rust's `rustdoc` JSON output into [FumaDocs](https:
 
 ## At a Glance
 
-| Feature              | Description                                                  |
-| -------------------- | ------------------------------------------------------------ |
-| **FumaDocs v14+**    | Full support for icons, separators, Callouts, Tabs, Cards    |
-| **Cargo workspaces** | `--workspace` processes every member into one FumaDocs tree  |
-| **Validation**       | Zod schemas with helpful error messages and hints            |
-| **Error Handling**   | Structured errors with codes, hints, and recovery context    |
-| **Components**       | Deprecation, Safety, Panics, Errors, Feature Gate callouts   |
-| **Navigation**       | auto-generated meta.json with icons and separators           |
-| **Flexible Output**  | Group by module, kind, or flat structure                     |
-| **CI-Friendly**      | Dry-run mode, JSON output, progress indicators               |
-| **Security**         | Path traversal prevention, input limits, log-injection guard |
+| Feature               | Description                                                                            |
+| --------------------- | -------------------------------------------------------------------------------------- |
+| **FumaDocs v14–v16+** | Full support for icons, separators, Callouts, Tabs, Cards — verified end-to-end on v16 |
+| **Cargo workspaces**  | `--workspace` processes every member into one FumaDocs tree                            |
+| **Validation**        | Zod schemas with helpful error messages and hints                                      |
+| **Error Handling**    | Structured errors with codes, hints, and recovery context                              |
+| **Components**        | Deprecation, Safety, Panics, Errors, Feature Gate callouts                             |
+| **Navigation**        | auto-generated meta.json with icons and separators                                     |
+| **Flexible Output**   | Group by module, kind, or flat structure                                               |
+| **CI-Friendly**       | Dry-run mode, JSON output, progress indicators                                         |
+| **Security**          | Path traversal prevention, input limits, log-injection guard                           |
 
 ### Rustdoc Format Compatibility
 
@@ -266,22 +267,31 @@ console.log(`Generated ${files.length} files`);
 
 ## FumaDocs Integration
 
+### Verified Stack (v16)
+
+End-to-end tested on **2026-04-20** with the following versions — all 4 generated pages prerender and render correctly in a Next.js production build:
+
+| Package         | Version |
+| --------------- | ------- |
+| `next`          | 16.2.4  |
+| `react`         | 19.2.5  |
+| `fumadocs-ui`   | 16.8.1  |
+| `fumadocs-core` | 16.8.1  |
+| `fumadocs-mdx`  | 14.3.1  |
+
+The generator's output (frontmatter, `meta.json`, separators, Callout/Tabs/Cards usage) is also schema-compatible with FumaDocs v14 and v15. Consumer setup has changed across major versions — use the import paths that match your installed version.
+
 ### mdx-components.tsx
+
+FumaDocs v16 ships `Callout`, `Tabs`, `Tab`, `Cards`, and `Card` in `defaultMdxComponents`, so the wrapper can be minimal:
 
 ```tsx
 import defaultMdxComponents from "fumadocs-ui/mdx";
-import { Callout } from "fumadocs-ui/components/callout";
-import { Tabs, Tab } from "fumadocs-ui/components/tabs";
-import { Cards, Card } from "fumadocs-ui/components/card";
+import type { MDXComponents } from "mdx/types";
 
 export function getMDXComponents(components?: MDXComponents): MDXComponents {
   return {
     ...defaultMdxComponents,
-    Callout,
-    Tabs,
-    Tab,
-    Cards,
-    Card,
     ...components,
   };
 }
@@ -292,12 +302,46 @@ export function getMDXComponents(components?: MDXComponents): MDXComponents {
 ```typescript
 import { defineDocs, defineConfig } from "fumadocs-mdx/config";
 
-export const apiDocs = defineDocs({
-  dir: "content/docs/api",
+export const docs = defineDocs({
+  dir: "content/docs",
 });
 
 export default defineConfig();
 ```
+
+### lib/source.ts (v16)
+
+```typescript
+import { docs } from "@/.source/server"; // v14/v15: '@/.source'
+import { loader } from "fumadocs-core/source";
+
+export const source = loader({
+  baseUrl: "/docs",
+  source: docs.toFumadocsSource(),
+  // icon: (name) => lucideIcons[name],  // resolve string icons → components
+});
+```
+
+> **Note on icons:** the generator emits `icon: "Folder"` / `"Box"` / etc. as strings in frontmatter and `meta.json`. Pass an `icon` resolver to `loader({...})` to map those strings to `lucide-react` components. Without a resolver, sidebar labels render the icon name as literal text (e.g. `BoxMyStruct`).
+
+### app/layout.tsx (v16)
+
+```tsx
+// v16: provider moved under /provider/next for Next.js
+import { RootProvider } from "fumadocs-ui/provider/next";
+// v14/v15 equivalent: import { RootProvider } from 'fumadocs-ui/provider';
+
+import "fumadocs-ui/style.css"; // self-contained bundle
+// or, with Tailwind v4: @import "fumadocs-ui/css/preset.css" in globals.css
+```
+
+### Import Path Changes at a Glance
+
+| What                   | v14 / v15              | v16                            |
+| ---------------------- | ---------------------- | ------------------------------ |
+| `RootProvider`         | `fumadocs-ui/provider` | `fumadocs-ui/provider/next`    |
+| Generated source       | `@/.source`            | `@/.source/server`             |
+| MDX default components | exported as `/mdx`     | exported as `/mdx` (unchanged) |
 
 ---
 
@@ -361,7 +405,7 @@ npm run format       # Prettier
 
 ## Deploying to FumaDocs
 
-The generated files are **deployment-ready** for FumaDocs v14+ projects. Follow this checklist to integrate:
+The generated files are **deployment-ready** for FumaDocs v14+ projects (verified end-to-end on v16). Follow this checklist to integrate:
 
 ### Deployment Checklist
 
@@ -487,14 +531,17 @@ The following rustdoc/documentation features are not currently supported:
 
 ### FumaDocs Deployment Issues
 
-| Issue                             | Solution                                                                         |
-| --------------------------------- | -------------------------------------------------------------------------------- |
-| Component import errors           | Ensure `mdx-components.tsx` exports `Callout`, `Tabs`, `Tab`, `Cards`, `Card`    |
-| Icons not rendering               | Install `lucide-react` and verify icon names in frontmatter                      |
-| Sidebar missing items             | Check `meta.json` exists in each module directory                                |
-| MDX compilation fails             | Verify all component imports are correct; check for unescaped special characters |
-| Navigation separators not showing | Ensure FumaDocs v14+ is installed (separators use `---Name---` format)           |
-| `defaultOpen` not working         | Requires FumaDocs v14+; check `meta.json` format                                 |
+| Issue                             | Solution                                                                                  |
+| --------------------------------- | ----------------------------------------------------------------------------------------- |
+| Component import errors           | Ensure `mdx-components.tsx` exports `Callout`, `Tabs`, `Tab`, `Cards`, `Card`             |
+| Icons not rendering               | Install `lucide-react` and verify icon names in frontmatter                               |
+| Sidebar missing items             | Check `meta.json` exists in each module directory                                         |
+| MDX compilation fails             | Verify all component imports are correct; check for unescaped special characters          |
+| Navigation separators not showing | Ensure FumaDocs v14+ is installed (separators use `---Name---` format)                    |
+| `defaultOpen` not working         | Requires FumaDocs v14+; check `meta.json` format                                          |
+| `RootProvider` import fails (v16) | On v16, import from `fumadocs-ui/provider/next`, not `fumadocs-ui/provider`               |
+| `@/.source` not found (v16)       | On v16, import from `@/.source/server` for server code, `@/.source/browser` for client    |
+| Sidebar shows `BoxMyStruct` text  | Pass an `icon` resolver to `loader({ icon: (name) => ... })` to map strings to components |
 
 ### Validation Errors
 
