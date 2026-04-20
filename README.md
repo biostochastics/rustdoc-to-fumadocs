@@ -6,17 +6,20 @@
 </p>
 
 <p align="center">
-  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT"></a>
-  <a href="https://www.typescriptlang.org/"><img src="https://img.shields.io/badge/TypeScript-5.3+-blue" alt="TypeScript: 5.3+"></a>
-  <a href="https://nodejs.org/"><img src="https://img.shields.io/badge/Node.js-18+-green" alt="Node.js: 18+"></a>
-  <a href="https://fumadocs.dev/"><img src="https://img.shields.io/badge/FumaDocs-v14+-purple" alt="FumaDocs: v14+"></a>
+  <a href="https://github.com/biostochastics/rustdoc-to-fumadocs/actions/workflows/ci.yml"><img src="https://github.com/biostochastics/rustdoc-to-fumadocs/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI"></a>
+  <a href="https://github.com/biostochastics/rustdoc-to-fumadocs/blob/main/package.json"><img src="https://img.shields.io/github/package-json/v/biostochastics/rustdoc-to-fumadocs?label=version" alt="Version"></a>
+  <a href="https://github.com/biostochastics/rustdoc-to-fumadocs/blob/main/LICENSE"><img src="https://img.shields.io/github/license/biostochastics/rustdoc-to-fumadocs" alt="License"></a>
+  <a href="https://github.com/biostochastics/rustdoc-to-fumadocs/commits/main"><img src="https://img.shields.io/github/last-commit/biostochastics/rustdoc-to-fumadocs" alt="Last commit"></a>
+  <a href="https://github.com/biostochastics/rustdoc-to-fumadocs/pulls?q=is%3Apr+is%3Amerged"><img src="https://img.shields.io/github/issues-pr-closed/biostochastics/rustdoc-to-fumadocs?label=merged%20PRs" alt="Merged PRs"></a>
 </p>
 
 <p align="center">
+  <a href="https://www.typescriptlang.org/"><img src="https://img.shields.io/badge/TypeScript-5.3+-blue" alt="TypeScript: 5.3+"></a>
+  <a href="https://nodejs.org/"><img src="https://img.shields.io/badge/Node.js-18+-green" alt="Node.js: 18+"></a>
+  <a href="https://fumadocs.dev/"><img src="https://img.shields.io/badge/FumaDocs-v14+-purple" alt="FumaDocs: v14+"></a>
   <a href="https://eslint.org/"><img src="https://img.shields.io/badge/ESLint-v9-4B32C3" alt="ESLint: v9"></a>
   <a href="https://prettier.io/"><img src="https://img.shields.io/badge/code_style-Prettier-ff69b4" alt="Code style: Prettier"></a>
   <a href="https://vitest.dev/"><img src="https://img.shields.io/badge/tests-Vitest-yellow" alt="Tests: Vitest"></a>
-  <img src="https://img.shields.io/badge/tests-284%20passing-brightgreen" alt="284 tests passing">
 </p>
 
 ---
