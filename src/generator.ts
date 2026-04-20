@@ -18,7 +18,16 @@
  */
 
 import { stringify } from "yaml";
-import type { RustdocCrate, Item, ItemKind, Id, VariantKind, Type, Attribute } from "./types.js";
+import type {
+  RustdocCrate,
+  Item,
+  ItemKind,
+  Id,
+  VariantKind,
+  Type,
+  Attribute,
+  GenericArgs,
+} from "./types.js";
 import { getItemKind, isPlainStruct, getPathName } from "./types.js";
 import { RustdocError, ErrorCode } from "./errors.js";
 
@@ -921,17 +930,7 @@ export class RustdocGenerator {
 
     if ("resolved_path" in type) {
       refs.add(type.resolved_path.id);
-      // Also collect generic arguments
-      if (type.resolved_path.args) {
-        const args = type.resolved_path.args;
-        if ("angle_bracketed" in args) {
-          for (const arg of args.angle_bracketed.args) {
-            if ("type" in arg) {
-              this.collectTypeReferences(arg.type, refs, depth + 1);
-            }
-          }
-        }
-      }
+      this.collectPathArgReferences(type.resolved_path.args, refs, depth);
     } else if ("borrowed_ref" in type) {
       this.collectTypeReferences(type.borrowed_ref.type, refs, depth + 1);
     } else if ("tuple" in type) {
@@ -948,11 +947,15 @@ export class RustdocGenerator {
       for (const bound of type.impl_trait) {
         if ("trait_bound" in bound) {
           refs.add(bound.trait_bound.trait.id);
+          // `impl Iterator<Item = Foo>` must also record `Foo`.
+          this.collectPathArgReferences(bound.trait_bound.trait.args, refs, depth);
         }
       }
     } else if ("dyn_trait" in type) {
       for (const polyTrait of type.dyn_trait.traits) {
         refs.add(polyTrait.trait.id);
+        // `dyn Foo<Bar>` must also record `Bar`.
+        this.collectPathArgReferences(polyTrait.trait.args, refs, depth);
       }
     } else if ("function_pointer" in type) {
       // Traverse function pointer parameter and return types
@@ -964,8 +967,50 @@ export class RustdocGenerator {
         this.collectTypeReferences(fnPtr.sig.output, refs, depth + 1);
       }
     } else if ("qualified_path" in type) {
-      // Traverse qualified path self type
-      this.collectTypeReferences(type.qualified_path.self_type, refs, depth + 1);
+      const qp = type.qualified_path;
+      // Self type: `<T as …>::Assoc` contributes `T`.
+      this.collectTypeReferences(qp.self_type, refs, depth + 1);
+      // Trait and its generic args: `<T as Trait<U>>::Assoc` must also
+      // contribute `Trait` and `U`. Previously both were dropped.
+      if (qp.trait) {
+        refs.add(qp.trait.id);
+        this.collectPathArgReferences(qp.trait.args, refs, depth);
+      }
+      // The qualified_path's own `args` (associated-type-on-assoc args,
+      // e.g. `<T as Iterator>::Item<K>`) must be traversed too.
+      this.collectPathArgReferences(qp.args, refs, depth);
+    }
+  }
+
+  /**
+   * Walk a `Path.args` structure and collect type references from every
+   * type-valued generic arg, associated-type constraint RHS, and the
+   * inputs/output of parenthesized (Fn-trait) arg forms.
+   */
+  private collectPathArgReferences(
+    args: GenericArgs | undefined,
+    refs: Set<Id>,
+    depth: number
+  ): void {
+    if (!args) return;
+    if ("angle_bracketed" in args) {
+      for (const arg of args.angle_bracketed.args) {
+        if ("type" in arg) {
+          this.collectTypeReferences(arg.type, refs, depth + 1);
+        }
+      }
+      for (const c of args.angle_bracketed.constraints ?? []) {
+        if ("equality" in c.binding && "type" in c.binding.equality) {
+          this.collectTypeReferences(c.binding.equality.type, refs, depth + 1);
+        }
+      }
+    } else if ("parenthesized" in args) {
+      for (const t of args.parenthesized.inputs) {
+        this.collectTypeReferences(t, refs, depth + 1);
+      }
+      if (args.parenthesized.output) {
+        this.collectTypeReferences(args.parenthesized.output, refs, depth + 1);
+      }
     }
   }
 

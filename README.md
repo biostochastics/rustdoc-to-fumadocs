@@ -106,7 +106,7 @@ rustdoc-to-fumadocs converts Rust's `rustdoc` JSON output into [FumaDocs](https:
 
 ```bash
 # Clone and install
-git clone https://github.com/Biostochastics/rustdoc-to-fumadocs.git
+git clone https://github.com/biostochastics/rustdoc-to-fumadocs.git
 cd rustdoc-to-fumadocs
 npm install
 ```

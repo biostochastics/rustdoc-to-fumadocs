@@ -4,7 +4,7 @@ All notable changes to rustdoc-to-fumadocs will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [Unreleased]
+## [0.3.1] - 2026-04-20
 
 ### Added
 
@@ -26,7 +26,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **Rustdoc format v57 rendering**: The `Path.name` → `Path.path` rename made every resolved type render as the literal string `undefined`. A new `getPathName()` helper reads either field.
 - **Idiomatic `&self`**: Function signatures render `&self` / `&'a self` / `&mut self` instead of `self: &Self`.
 - **No space before `(`**: `fn encode(x: T)` instead of `fn encode (x: T)`.
-- **Trait generic args on impl headers**: `impl From<UuidV7Id<K, E>> for uuid::Uuid` instead of `impl From for uuid::Uuid`.
+- **Trait generic args on impl headers**: `impl From<T> for U` is now preserved instead of being truncated to `impl From for U`.
 - **Negative trait impls**: `impl !Send for T` was silently dropping the `!`.
 - **`?Sized` / `~const` modifiers** are preserved in trait bounds.
 - **Const generics and default generic parameters** render with their types and defaults (`<const N: usize>`, `<T: Clone = String>`).
@@ -34,6 +34,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **Never primitive** renders as `!` instead of the literal string `never`.
 - **`$crate::` prefixes** from derive-macro expansions are stripped (e.g. `$crate::fmt::Formatter` → `fmt::Formatter`).
 - **Lifetime outlives bounds** inside `<…>` are preserved (`<'a: 'b>`).
+- **Cross-reference completeness**: `collectTypeReferences()` now recurses into `qualified_path.args`, `qualified_path.trait.args`, `impl Trait` / `dyn Trait` generic args, and associated-type equality constraints. Previously a type that appeared only inside `<T as Trait<U>>::Assoc` would drop `U` and `Trait`.
 - **`mkdir` errors** in `writeFilesParallel` are wrapped as `OUTPUT_WRITE_FAILED` instead of surfacing as uncaught EACCES.
 - **Silent skipping in `processModule()`**: now warns when encountering non-module items with meaningful content.
 - **Root module validation**: string conversion for format v56+ numeric IDs.
