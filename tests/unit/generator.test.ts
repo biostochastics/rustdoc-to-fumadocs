@@ -3,7 +3,7 @@
  */
 
 import { describe, it, expect } from "vitest";
-import { sanitizePath } from "../../src/generator.js";
+import { sanitizePath, sanitizeDocstring } from "../../src/generator.js";
 
 describe("sanitizePath", () => {
   describe("path traversal prevention", () => {
@@ -151,5 +151,95 @@ describe("sanitizePath", () => {
       expect(result).not.toContain(">");
       expect(result).not.toContain("\x01");
     });
+  });
+});
+
+describe("sanitizeDocstring", () => {
+  it("leaves plain prose untouched", () => {
+    expect(sanitizeDocstring("Hello world.")).toBe("Hello world.");
+  });
+
+  it("passes through already-safe markdown", () => {
+    const src = "# Heading\n\nA paragraph with **bold** and `inline code`.";
+    expect(sanitizeDocstring(src)).toBe(src);
+  });
+
+  it("escapes `<` before a digit (<40 LOC)", () => {
+    expect(sanitizeDocstring("(<40 LOC each)")).toBe("(&lt;40 LOC each)");
+  });
+
+  it("escapes URL autolinks", () => {
+    expect(sanitizeDocstring("Spec: <https://example.com/a/b>.")).toBe(
+      "Spec: &lt;https://example.com/a/b&gt;."
+    );
+  });
+
+  it("escapes mailto autolinks", () => {
+    expect(sanitizeDocstring("Write <mailto:x@y.z>.")).toBe("Write &lt;mailto:x@y.z&gt;.");
+  });
+
+  it("escapes metasyntactic `<word>` placeholders", () => {
+    expect(sanitizeDocstring("path `testvectors/<encoding>/basic.json`")).toBe(
+      "path `testvectors/<encoding>/basic.json`"
+    );
+    expect(sanitizeDocstring("Accepts <encoding> names.")).toBe("Accepts &lt;encoding&gt; names.");
+  });
+
+  it("preserves safe inline HTML tags", () => {
+    expect(sanitizeDocstring("use <kbd>Ctrl</kbd>")).toBe("use <kbd>Ctrl</kbd>");
+    expect(sanitizeDocstring("<br>line break")).toBe("<br>line break");
+  });
+
+  it("escapes Rust-style generics", () => {
+    expect(sanitizeDocstring("See `Opaque<T>` and `Sealed<T>`")).toBe(
+      "See `Opaque<T>` and `Sealed<T>`"
+    );
+    expect(sanitizeDocstring("The Opaque<T> primitive wraps keys.")).toBe(
+      "The Opaque&lt;T&gt; primitive wraps keys."
+    );
+  });
+
+  it("preserves JSX-like components with attributes", () => {
+    // Tab/Tabs are emitted by rustdoc-to-fumadocs; don't corrupt them.
+    const src = '<Tab value="API"><code>foo</code></Tab>';
+    expect(sanitizeDocstring(src)).toBe(src);
+  });
+
+  it("does not escape content inside fenced code blocks", () => {
+    const src = "```rust\nlet x: Opaque<T> = ...;\n```";
+    expect(sanitizeDocstring(src)).toBe(src);
+  });
+
+  it("rewrites compile_fail fence langs to rust + title", () => {
+    const src = "```compile_fail\nfn x() { bad_code }\n```";
+    const out = sanitizeDocstring(src);
+    expect(out).toContain('```rust title="compile_fail"');
+    expect(out).toContain("fn x() { bad_code }");
+  });
+
+  it("rewrites ignore/no_run/should_panic fence langs", () => {
+    for (const directive of ["ignore", "no_run", "should_panic"]) {
+      const src = `\`\`\`${directive}\nfn main() {}\n\`\`\``;
+      const out = sanitizeDocstring(src);
+      expect(out).toContain(`\`\`\`rust title="${directive}"`);
+    }
+  });
+
+  it("rewrites editionYYYY fence langs", () => {
+    const src = "```edition2021\nfn main() {}\n```";
+    const out = sanitizeDocstring(src);
+    expect(out).toContain('```rust title="edition2021"');
+  });
+
+  it("is idempotent (applying twice yields the same output)", () => {
+    const src = "Spec: <https://example.com>. Opaque<T> works.";
+    const once = sanitizeDocstring(src);
+    const twice = sanitizeDocstring(once);
+    expect(twice).toBe(once);
+  });
+
+  it("handles empty and null inputs gracefully", () => {
+    expect(sanitizeDocstring("")).toBe("");
+    expect(sanitizeDocstring(undefined as unknown as string)).toBe(undefined as unknown as string);
   });
 });

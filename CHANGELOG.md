@@ -4,6 +4,19 @@ All notable changes to rustdoc-to-fumadocs will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Added
+
+- **MDX-safe docstring sanitization**: new `sanitizeDocstring()` export runs at generator construction time against every `item.docs`, struct/union field `docs`, and enum variant `docs`. Two passes, code-fence aware:
+  1. Outside fenced code blocks, escapes patterns MDX would mistake for JSX: URL autolinks (`<https://…>`, `<mailto:…>`), Rust generic placeholders in prose (`Opaque<T>`, `Sealed<K, V>`), metasyntactic `<word>` (e.g. `<encoding>`), and `<` before a digit. Inline `` ` … ` `` spans and a conservative whitelist of safe inline HTML tags (`<kbd>`, `<sub>`, `<br>`, …) are preserved. JSX tags with attributes (`<Tab value="…">`) pass through untouched.
+  2. Rewrites rustdoc doctest-directive fence langs (`compile_fail`, `ignore`, `no_run`, `should_panic`, `edition20{15,18,21,24}`) to `rust` with the directive preserved as a `title="…"` attribute so the intent stays visible and Shiki can resolve the lang.
+     Idempotent. Ported from a downstream sync pipeline so every consumer benefits without reimplementing the filters.
+
+### Tests
+
+- 14 new unit tests for `sanitizeDocstring` covering plain prose, autolinks, generics, fenced blocks, doctest-directive rewrites, safe-tag preservation, JSX pass-through, and idempotency. Total: 299 tests.
+
 ## [0.3.1] - 2026-04-20
 
 ### Added

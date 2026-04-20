@@ -150,6 +150,121 @@ function sanitizeLogMessage(message: string): string {
 }
 
 /**
+ * Code-fence langs emitted by rustdoc that Shiki cannot resolve. These are
+ * all Rust — the `compile_fail` / `ignore` / `no_run` / `should_panic` /
+ * `edition20XX` tokens are doctest directives, not languages. Rewrite them
+ * to `rust` and preserve the directive as the block title so it stays
+ * visible to the reader.
+ */
+const RUSTDOC_DOCTEST_DIRECTIVES = new Set([
+  "compile_fail",
+  "ignore",
+  "no_run",
+  "should_panic",
+  "edition2015",
+  "edition2018",
+  "edition2021",
+  "edition2024",
+]);
+
+/**
+ * A conservative set of HTML tags that MDX parses safely inline. Everything
+ * else in the shape `<word>` or `<T>` is rewritten to `&lt;…&gt;` so MDX
+ * does not attempt to resolve the tag as a JSX component.
+ */
+const SAFE_INLINE_HTML_TAGS = new Set([
+  "br",
+  "hr",
+  "kbd",
+  "sub",
+  "sup",
+  "em",
+  "strong",
+  "code",
+  "pre",
+  "b",
+  "i",
+  "u",
+  "s",
+  "mark",
+  "small",
+  "cite",
+  "q",
+  "abbr",
+]);
+
+/**
+ * Sanitize a rustdoc docstring for MDX consumption. Runs two passes:
+ *
+ *   1. Code-fence aware: outside fenced ```...```, escape patterns MDX
+ *      would mistake for JSX (URL autolinks `<https://…>`, Rust generic
+ *      placeholders `<T>` / `<K, V>`, metasyntactic `<word>`).
+ *   2. Code-fence language normalization: rewrite rustdoc's doctest
+ *      directives (`compile_fail`, `ignore`, `no_run`, `should_panic`,
+ *      `editionYYYY`) to `rust` with a `title="directive"` preserved so
+ *      the doctest intent stays legible.
+ *
+ * This was ported from a downstream fluxid-docs sync pipeline to the tool
+ * itself — every consumer benefits without re-implementing the filters.
+ */
+export function sanitizeDocstring(raw: string): string {
+  if (!raw) return raw;
+  const out: string[] = [];
+  let inFence = false;
+  for (const rawLine of raw.split("\n")) {
+    const fenceMatch = /^(\s*```)(\S+)?(.*)$/.exec(rawLine);
+    if (fenceMatch) {
+      // Entering or leaving a fence. Normalize langs on the opening fence.
+      if (!inFence && fenceMatch[2] && RUSTDOC_DOCTEST_DIRECTIVES.has(fenceMatch[2])) {
+        // Rewrite doctest directive → rust lang + title.
+        // Strip any `,ignore`/`,compile_fail`/etc. secondary tokens that
+        // rustdoc sometimes appends in the `rest` segment.
+        let rest = fenceMatch[3] ?? "";
+        rest = rest
+          .replace(/^[\s,]+/, "")
+          .replace(
+            /(^|[,\s])(compile_fail|ignore|no_run|should_panic|edition20(15|18|21|24))(\b)/g,
+            "$1"
+          );
+        out.push(`${fenceMatch[1]}rust title="${fenceMatch[2]}"${rest ? ` ${rest}` : ""}`);
+      } else {
+        out.push(rawLine);
+      }
+      inFence = !inFence;
+      continue;
+    }
+    if (inFence) {
+      out.push(rawLine);
+      continue;
+    }
+    // Split on inline `…` spans to preserve literal code.
+    const parts = rawLine.split(/(`[^`]*`)/);
+    for (let i = 0; i < parts.length; i++) {
+      if (i % 2 === 1) continue;
+      let text = parts[i];
+      // `<` before a digit → escape (e.g. "<40 LOC each").
+      text = text.replace(/<(\d)/g, "&lt;$1");
+      // URL / mailto autolinks: `<https://…>`, `<mailto:…>`.
+      text = text.replace(/<([a-z][a-z0-9+.-]*:[^>\s]+)>/gi, "&lt;$1&gt;");
+      // `<lowercase_word>` metasyntactic — skip known safe inline HTML tags.
+      text = text.replace(/<([a-z_][a-z0-9_-]*)>/g, (match, word) =>
+        SAFE_INLINE_HTML_TAGS.has(String(word).toLowerCase()) ? match : `&lt;${word}&gt;`
+      );
+      // Generic placeholders: `<T>`, `<K, V>`, `<UserId>`. Skip patterns
+      // containing `=` or `/` — those are attribute-bearing JSX tags.
+      text = text.replace(/<([A-Z][A-Za-z0-9_,\s]*)>/g, (match, inner) => {
+        const innerStr = String(inner);
+        if (/[=/]/.test(innerStr)) return match;
+        return `&lt;${innerStr}&gt;`;
+      });
+      parts[i] = text;
+    }
+    out.push(parts.join(""));
+  }
+  return out.join("\n");
+}
+
+/**
  * Checks if an enum variant is a plain/unit variant (no associated data).
  *
  * Handles format version differences:
@@ -275,6 +390,46 @@ export class RustdocGenerator {
       useCards: true,
       ...options,
     } as Required<GeneratorOptions>;
+    // MDX-safeguard every docstring once at ingest time so downstream
+    // render sites do not re-implement escape / code-fence-lang filters.
+    this.normalizeDocstrings();
+  }
+
+  /**
+   * Walk the rustdoc index and rewrite every `item.docs` / `field.docs`
+   * through {@link sanitizeDocstring}. This fixes the two MDX-specific
+   * breakage modes rustdoc emits verbatim: URL / generic `<…>` patterns
+   * that MDX parses as JSX, and doctest-directive fence langs
+   * (`compile_fail`, `ignore`, …) that Shiki cannot resolve.
+   */
+  private normalizeDocstrings(): void {
+    const items = this.crate.index as Record<string, unknown>;
+    for (const key of Object.keys(items)) {
+      const item = items[key] as { docs?: unknown; inner?: Record<string, unknown> } | undefined;
+      if (!item) continue;
+      if (typeof item.docs === "string" && item.docs.length > 0) {
+        item.docs = sanitizeDocstring(item.docs);
+      }
+      // Struct / enum fields carry their own docstrings.
+      const inner = item.inner;
+      if (inner && typeof inner === "object") {
+        for (const innerKind of Object.keys(inner)) {
+          const innerItem = inner[innerKind] as
+            | { fields?: { docs?: unknown }[]; variants?: { docs?: unknown }[] }
+            | undefined;
+          if (!innerItem) continue;
+          for (const subKey of ["fields", "variants"] as const) {
+            const list = innerItem[subKey];
+            if (!Array.isArray(list)) continue;
+            for (const sub of list) {
+              if (sub && typeof sub.docs === "string" && sub.docs.length > 0) {
+                sub.docs = sanitizeDocstring(sub.docs);
+              }
+            }
+          }
+        }
+      }
+    }
   }
 
   /**
@@ -649,17 +804,24 @@ export class RustdocGenerator {
       if (submodules.length > 0) {
         pages.push("---Modules---");
         for (const childItem of submodules) {
-          // Use FumaDocs v14+ folder extraction syntax
-          pages.push(`...${childItem.name}`);
+          // Reference submodules as folder LINKS rather than inline-spread
+          // extractions. The `...name` spread inlines every child into this
+          // meta.json, which duplicates "Functions" / "Structs" headers on
+          // every crate and makes the sidebar unscannable on a multi-crate
+          // workspace. Using the bare name keeps the submodule collapsed
+          // under its own folder with its own meta.json intact.
+          pages.push(childItem.name!);
         }
       }
     }
 
-    // Build meta.json with FumaDocs v14+ structure
+    // Build meta.json with FumaDocs v14+ structure. `defaultOpen: false`
+    // keeps the sidebar compact — users explicitly expand the crates they
+    // care about instead of being hit with a wall of auto-expanded trees.
     const meta: Record<string, unknown> = {
       title: item.name ?? this.crate.crate_version ?? "API",
       icon: "Folder",
-      defaultOpen: true,
+      defaultOpen: false,
       pages,
     };
 

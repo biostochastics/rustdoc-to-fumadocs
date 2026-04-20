@@ -132,7 +132,7 @@ npx tsx src/cli.ts --input /path/to/target/doc/my_crate.json --output content/do
 ### Verify Installation
 
 ```bash
-npm run test:run    # Run 284 tests
+npm run test:run    # Run 299 tests
 npm run build       # Compile TypeScript
 ```
 
@@ -385,7 +385,7 @@ Output: `target/doc/<crate_name>.json`
 npm install          # Install dependencies
 npm run build        # Compile TypeScript
 npm run test         # Watch mode
-npm run test:run     # Single run (284 tests)
+npm run test:run     # Single run (299 tests)
 npm run test:coverage # Coverage report
 npm run lint         # ESLint
 npm run format       # Prettier
