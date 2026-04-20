@@ -53,11 +53,28 @@ export function formatFunctionSignature(name: string, fn: RustFunction): string 
   }
 
   parts.push("fn");
-  parts.push(name + formatGenerics(fn.generics));
 
-  // Parameters
-  const params = fn.sig.inputs.map(([paramName, type]) => `${paramName}: ${formatType(type)}`);
-  parts.push(`(${params.join(", ")})`);
+  // Parameters — render self parameter idiomatically (&self / &mut self / self)
+  // rather than the literal `self: &Self` that rustdoc emits.
+  const params = fn.sig.inputs.map(([paramName, type]) => {
+    if (paramName === "self") {
+      if ("generic" in type && type.generic === "Self") return "self";
+      if ("borrowed_ref" in type) {
+        const inner = type.borrowed_ref.type;
+        if ("generic" in inner && inner.generic === "Self") {
+          const mut = type.borrowed_ref.is_mutable ? "mut " : "";
+          const lt = type.borrowed_ref.lifetime
+            ? `${type.borrowed_ref.lifetime.startsWith("'") ? type.borrowed_ref.lifetime : `'${type.borrowed_ref.lifetime}`} `
+            : "";
+          return `&${lt}${mut}self`;
+        }
+      }
+    }
+    return `${paramName}: ${formatType(type)}`;
+  });
+
+  // Join name + generics + param list with no space between `name<...>` and `(`.
+  parts.push(`${name}${formatGenerics(fn.generics)}(${params.join(", ")})`);
 
   // Return type
   if (fn.sig.output) {

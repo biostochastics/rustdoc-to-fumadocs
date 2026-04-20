@@ -19,7 +19,7 @@
 
 import { stringify } from "yaml";
 import type { RustdocCrate, Item, ItemKind, Id, VariantKind, Type, Attribute } from "./types.js";
-import { getItemKind, isPlainStruct } from "./types.js";
+import { getItemKind, isPlainStruct, getPathName } from "./types.js";
 import { RustdocError, ErrorCode } from "./errors.js";
 
 /**
@@ -1651,10 +1651,19 @@ export class RustdocGenerator {
     header += formatGenerics(implDef.generics);
 
     if (implDef.trait) {
-      // Try to get the full trait name from paths
+      // Render the trait as a Type so its generic args (e.g. From<T>, TryFrom<U>)
+      // are preserved. Prefer the canonical full path from the paths table
+      // (e.g. core::convert::From) over the bare name.
       const traitPath = this.getPath(implDef.trait.id);
-      const traitName = traitPath ? traitPath.join("::") : implDef.trait.name;
-      header += ` ${traitName} for`;
+      const canonical = traitPath?.join("::");
+      const traitType: Type = {
+        resolved_path: {
+          path: canonical ?? getPathName(implDef.trait),
+          id: implDef.trait.id,
+          args: implDef.trait.args,
+        },
+      };
+      header += ` ${formatType(traitType)} for`;
     }
     header += ` ${formatType(implDef.for)}`;
 

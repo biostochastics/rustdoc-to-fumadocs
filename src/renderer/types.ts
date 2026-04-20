@@ -16,6 +16,7 @@
  * - qualified_path: Associated type paths (<T as Trait>::Type)
  */
 
+import { getPathName } from "../types.js";
 import type { Type, GenericArg, GenericBound } from "../types.js";
 
 /**
@@ -33,7 +34,7 @@ import type { Type, GenericArg, GenericBound } from "../types.js";
 export function formatType(type: Type): string {
   if ("resolved_path" in type) {
     const path = type.resolved_path;
-    let result = path.name;
+    let result = getPathName(path);
     // Render generic arguments
     if (path.args) {
       if ("angle_bracketed" in path.args) {
@@ -124,7 +125,7 @@ export function formatType(type: Type): string {
     if (dyn.traits.length > 0) {
       // Format trait bounds with generic args
       const traits = dyn.traits.map((t) => {
-        let name = t.trait.name;
+        let name = getPathName(t.trait);
         // Add generic args if present
         if (t.trait.args && "angle_bracketed" in t.trait.args) {
           const args = t.trait.args.angle_bracketed.args;
@@ -160,7 +161,8 @@ export function formatType(type: Type): string {
   }
   if ("qualified_path" in type) {
     const qp = type.qualified_path;
-    return `<${formatType(qp.self_type)} as ${qp.trait?.name ?? "?"}>::${qp.name}`;
+    const traitName = qp.trait ? getPathName(qp.trait) : "?";
+    return `<${formatType(qp.self_type)} as ${traitName}>::${qp.name}`;
   }
   if ("infer" in type) {
     return "_";
@@ -210,7 +212,7 @@ export function formatGenericArg(arg: GenericArg): string {
  */
 export function formatGenericBound(bound: GenericBound): string {
   if ("trait_bound" in bound) {
-    return bound.trait_bound.trait.name;
+    return getPathName(bound.trait_bound.trait);
   }
   if ("outlives" in bound) {
     // Lifetimes in rustdoc JSON already include the leading '

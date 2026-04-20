@@ -146,6 +146,20 @@ describe("formatType", () => {
       expect(formatType(type)).toBe("String");
     });
 
+    it("formats path using v57 `path` field instead of `name`", () => {
+      const type: Type = {
+        resolved_path: { path: "String", id: 1, args: undefined },
+      };
+      expect(formatType(type)).toBe("String");
+    });
+
+    it("strips leading `$crate::` from derive-macro paths", () => {
+      const type: Type = {
+        resolved_path: { path: "$crate::fmt::Formatter", id: 1, args: undefined },
+      };
+      expect(formatType(type)).toBe("fmt::Formatter");
+    });
+
     it("formats path with angle-bracketed args", () => {
       const type: Type = {
         resolved_path: {

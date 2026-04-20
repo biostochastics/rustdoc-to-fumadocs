@@ -44,7 +44,7 @@ describe("formatFunctionSignature", () => {
   describe("basic signatures", () => {
     it("formats a simple function without parameters", () => {
       const fn = createFunction({});
-      expect(formatFunctionSignature("my_func", fn)).toBe("fn my_func ()");
+      expect(formatFunctionSignature("my_func", fn)).toBe("fn my_func()");
     });
 
     it("formats a function with parameters", () => {
@@ -56,7 +56,7 @@ describe("formatFunctionSignature", () => {
           ],
         },
       });
-      expect(formatFunctionSignature("add", fn)).toBe("fn add (x: i32, y: i32)");
+      expect(formatFunctionSignature("add", fn)).toBe("fn add(x: i32, y: i32)");
     });
 
     it("formats a function with return type", () => {
@@ -66,7 +66,7 @@ describe("formatFunctionSignature", () => {
           output: { primitive: "i32" },
         },
       });
-      expect(formatFunctionSignature("square", fn)).toBe("fn square (x: i32) -> i32");
+      expect(formatFunctionSignature("square", fn)).toBe("fn square(x: i32) -> i32");
     });
   });
 
@@ -75,28 +75,28 @@ describe("formatFunctionSignature", () => {
       const fn = createFunction({
         header: { is_const: true },
       });
-      expect(formatFunctionSignature("const_fn", fn)).toBe("const fn const_fn ()");
+      expect(formatFunctionSignature("const_fn", fn)).toBe("const fn const_fn()");
     });
 
     it("formats an async function", () => {
       const fn = createFunction({
         header: { is_async: true },
       });
-      expect(formatFunctionSignature("async_fn", fn)).toBe("async fn async_fn ()");
+      expect(formatFunctionSignature("async_fn", fn)).toBe("async fn async_fn()");
     });
 
     it("formats an unsafe function", () => {
       const fn = createFunction({
         header: { is_unsafe: true },
       });
-      expect(formatFunctionSignature("unsafe_fn", fn)).toBe("unsafe fn unsafe_fn ()");
+      expect(formatFunctionSignature("unsafe_fn", fn)).toBe("unsafe fn unsafe_fn()");
     });
 
     it("formats a function with multiple modifiers", () => {
       const fn = createFunction({
         header: { is_const: true, is_unsafe: true },
       });
-      expect(formatFunctionSignature("special", fn)).toBe("const unsafe fn special ()");
+      expect(formatFunctionSignature("special", fn)).toBe("const unsafe fn special()");
     });
   });
 
@@ -105,49 +105,49 @@ describe("formatFunctionSignature", () => {
       const fn = createFunction({
         header: { abi: { C: { unwind: false } } },
       });
-      expect(formatFunctionSignature("c_func", fn)).toBe('extern "C" fn c_func ()');
+      expect(formatFunctionSignature("c_func", fn)).toBe('extern "C" fn c_func()');
     });
 
     it('formats extern "C" unwind function', () => {
       const fn = createFunction({
         header: { abi: { C: { unwind: true } } },
       });
-      expect(formatFunctionSignature("c_unwind", fn)).toBe('extern "C" fn c_unwind ()');
+      expect(formatFunctionSignature("c_unwind", fn)).toBe('extern "C" fn c_unwind()');
     });
 
     it('formats extern "system" function', () => {
       const fn = createFunction({
         header: { abi: { System: { unwind: false } } },
       });
-      expect(formatFunctionSignature("system_func", fn)).toBe('extern "system" fn system_func ()');
+      expect(formatFunctionSignature("system_func", fn)).toBe('extern "system" fn system_func()');
     });
 
     it('formats extern "system" unwind function', () => {
       const fn = createFunction({
         header: { abi: { System: { unwind: true } } },
       });
-      expect(formatFunctionSignature("sys_unwind", fn)).toBe('extern "system" fn sys_unwind ()');
+      expect(formatFunctionSignature("sys_unwind", fn)).toBe('extern "system" fn sys_unwind()');
     });
 
     it("formats function with custom ABI", () => {
       const fn = createFunction({
         header: { abi: { Other: "aapcs" } },
       });
-      expect(formatFunctionSignature("arm_func", fn)).toBe('extern "aapcs" fn arm_func ()');
+      expect(formatFunctionSignature("arm_func", fn)).toBe('extern "aapcs" fn arm_func()');
     });
 
     it('formats unsafe extern "C" function', () => {
       const fn = createFunction({
         header: { is_unsafe: true, abi: { C: { unwind: false } } },
       });
-      expect(formatFunctionSignature("unsafe_c", fn)).toBe('unsafe extern "C" fn unsafe_c ()');
+      expect(formatFunctionSignature("unsafe_c", fn)).toBe('unsafe extern "C" fn unsafe_c()');
     });
 
     it("does not add extern for Rust ABI", () => {
       const fn = createFunction({
         header: { abi: "Rust" },
       });
-      expect(formatFunctionSignature("rust_fn", fn)).toBe("fn rust_fn ()");
+      expect(formatFunctionSignature("rust_fn", fn)).toBe("fn rust_fn()");
     });
   });
 
@@ -175,7 +175,7 @@ describe("formatFunctionSignature", () => {
           ],
         },
       });
-      expect(formatFunctionSignature("cloneable", fn)).toBe("fn cloneable<T> () where T: Clone");
+      expect(formatFunctionSignature("cloneable", fn)).toBe("fn cloneable<T>() where T: Clone");
     });
 
     it("formats function with multiple bounds", () => {
@@ -209,7 +209,7 @@ describe("formatFunctionSignature", () => {
         },
       });
       expect(formatFunctionSignature("multi_bound", fn)).toBe(
-        "fn multi_bound<T> () where T: Clone + Debug"
+        "fn multi_bound<T>() where T: Clone + Debug"
       );
     });
 
@@ -231,7 +231,7 @@ describe("formatFunctionSignature", () => {
         },
       });
       expect(formatFunctionSignature("lifetime_fn", fn)).toBe(
-        "fn lifetime_fn<'a, 'b> () where 'a: 'b"
+        "fn lifetime_fn<'a, 'b>() where 'a: 'b"
       );
     });
 
@@ -277,7 +277,7 @@ describe("formatFunctionSignature", () => {
         },
       });
       expect(formatFunctionSignature("multi_where", fn)).toBe(
-        "fn multi_where<T, U> () where T: Clone, U: Debug"
+        "fn multi_where<T, U>() where T: Clone, U: Debug"
       );
     });
 
@@ -310,8 +310,63 @@ describe("formatFunctionSignature", () => {
         },
       });
       expect(formatFunctionSignature("process", fn)).toBe(
-        "async fn process<T> (item: T) -> T where T: Send"
+        "async fn process<T>(item: T) -> T where T: Send"
       );
+    });
+  });
+
+  describe("self parameter rendering", () => {
+    it("renders &self for shared reference to Self", () => {
+      const fn = createFunction({
+        sig: {
+          inputs: [
+            [
+              "self",
+              {
+                borrowed_ref: { lifetime: undefined, is_mutable: false, type: { generic: "Self" } },
+              },
+            ],
+          ],
+        },
+      });
+      expect(formatFunctionSignature("method", fn)).toBe("fn method(&self)");
+    });
+
+    it("renders &mut self for mutable reference to Self", () => {
+      const fn = createFunction({
+        sig: {
+          inputs: [
+            [
+              "self",
+              {
+                borrowed_ref: { lifetime: undefined, is_mutable: true, type: { generic: "Self" } },
+              },
+            ],
+          ],
+        },
+      });
+      expect(formatFunctionSignature("method", fn)).toBe("fn method(&mut self)");
+    });
+
+    it("renders &'a self for lifetime-bound reference to Self", () => {
+      const fn = createFunction({
+        sig: {
+          inputs: [
+            [
+              "self",
+              { borrowed_ref: { lifetime: "'a", is_mutable: false, type: { generic: "Self" } } },
+            ],
+          ],
+        },
+      });
+      expect(formatFunctionSignature("method", fn)).toBe("fn method(&'a self)");
+    });
+
+    it("renders owned self for Self by value", () => {
+      const fn = createFunction({
+        sig: { inputs: [["self", { generic: "Self" }]] },
+      });
+      expect(formatFunctionSignature("method", fn)).toBe("fn method(self)");
     });
   });
 });

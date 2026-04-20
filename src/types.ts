@@ -372,9 +372,24 @@ export type Type =
   | { qualified_path: { name: string; args: GenericArgs; self_type: Type; trait?: Path } };
 
 export interface Path {
-  name: string;
+  /** Display name. Populated by rustdoc format v35-v56 as "name". */
+  name?: string;
+  /** Display name. Populated by rustdoc format v57+ as "path" (rename of "name"). */
+  path?: string;
   id: Id;
   args?: GenericArgs;
+}
+
+/**
+ * Returns the display name of a rustdoc `Path`, handling the v57 `name` → `path` rename.
+ * Strips `$crate::` prefixes that leak from derive-macro expansions
+ * (e.g. `$crate::fmt::Formatter` → `fmt::Formatter`).
+ * Falls back to `"?"` only when both fields are absent (malformed input).
+ */
+export function getPathName(p: Path): string {
+  const raw =
+    [p.path, p.name].find((s): s is string => typeof s === "string" && s.length > 0) ?? "?";
+  return raw.startsWith("$crate::") ? raw.slice("$crate::".length) : raw;
 }
 
 export interface DynTrait {
