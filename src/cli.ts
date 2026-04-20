@@ -329,7 +329,11 @@ async function writeFilesParallel(
       const file = files[idx];
       const dir = dirname(file.absolutePath);
       if (!createdDirs.has(dir)) {
-        await mkdir(dir, { recursive: true });
+        try {
+          await mkdir(dir, { recursive: true });
+        } catch (err) {
+          throw outputWriteError(dir, err as Error);
+        }
         createdDirs.add(dir);
       }
       try {
@@ -424,7 +428,8 @@ export async function run(argv: string[], streams: CliStreams = defaultStreams):
     if (await pathExists("Cargo.toml")) {
       try {
         const cargoToml = await readFile("Cargo.toml", "utf-8");
-        const nameMatch = /^name\s*=\s*"([^"]+)"/m.exec(cargoToml);
+        // Support both double and single quotes in Cargo.toml name field
+        const nameMatch = /^name\s*=\s*["']([^"']+)["']/m.exec(cargoToml);
         if (nameMatch) {
           const crateName = nameMatch[1];
           inputPath = await findRustdocJson(crateName);
@@ -601,14 +606,18 @@ export async function run(argv: string[], streams: CliStreams = defaultStreams):
     streams.stdout(`Writing files... 0/${writable.length}`);
   }
 
-  await writeFilesParallel(writable, WRITE_CONCURRENCY, (written, path) => {
-    if (showProgress && written % 10 === 0) {
-      streams.stdout(`\rWriting files... ${written}/${writable.length}`);
-    }
-    if (args.verbose) {
-      streams.stdout(`  -> ${path}\n`);
-    }
-  });
+  try {
+    await writeFilesParallel(writable, WRITE_CONCURRENCY, (written, path) => {
+      if (showProgress && written % 10 === 0) {
+        streams.stdout(`\rWriting files... ${written}/${writable.length}`);
+      }
+      if (args.verbose) {
+        streams.stdout(`  -> ${path}\n`);
+      }
+    });
+  } catch (err) {
+    return emitError(err, args, streams);
+  }
 
   if (showProgress) {
     streams.stdout(`\rWriting files... ${writable.length}/${writable.length}\n`);

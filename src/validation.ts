@@ -42,8 +42,16 @@ const ExternalCrateSchema = z.object({
 });
 
 /**
+ * ID schema - accepts both string (format 35-55) and number (format 56+).
+ * JSON object keys remain strings, but id fields may be numeric.
+ * Defined early so it can be used in VisibilitySchema.
+ */
+const IdSchema = z.union([z.string(), z.number()]);
+
+/**
  * Schema for Item visibility.
  * Can be a string or an object with restricted path.
+ * Format v56+ may use numeric IDs for restricted.parent.
  */
 const VisibilitySchema = z.union([
   z.literal("public"),
@@ -51,7 +59,7 @@ const VisibilitySchema = z.union([
   z.literal("crate"),
   z.object({
     restricted: z.object({
-      parent: z.string(),
+      parent: IdSchema, // Changed: accepts string or number for format v56+ compatibility
       path: z.string(),
     }),
   }),
@@ -79,12 +87,6 @@ const SpanSchema = z
     end: z.tuple([z.number(), z.number()]),
   })
   .nullish();
-
-/**
- * ID schema - accepts both string (format 35-55) and number (format 56+).
- * JSON object keys remain strings, but id fields may be numeric.
- */
-const IdSchema = z.union([z.string(), z.number()]);
 
 /**
  * LOOSE schema for Item.

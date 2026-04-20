@@ -14,6 +14,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **Enhanced path sanitization**: Empty strings return `"unnamed"`, handles Unicode normalization, and truncates to filesystem limits (255 chars)
 - **Centralized kind ordering**: `KIND_ORDER` constant used consistently across module index and meta.json generation
 - **Improved type predicates**: Added proper JSDoc and type predicate return types for `isPlainVariant()`, `isUnitStruct()`, etc.
+- **Tab content indentation**: Reduced from 4 spaces to 0 to prevent MDX rendering as code blocks
+- **Feature gate regex**: Now also matches `cfg_attr(feature = "...")` and `cfg_attr(not(feature = "..."), ...)` patterns
 
 ### Fixed
 
@@ -21,6 +23,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **Root module validation**: Uses string conversion for format 56+ numeric ID compatibility
 - **Field type fallback**: Returns `"unknown"` instead of `"..."` with warning for unexpected field structures
 - **CLI logger in JSON mode**: Structured logger pattern replaces empty function anti-pattern
+- **RenderContext ID handling**: `getItem()` and `getPath()` now convert numeric IDs to strings for format v56+ compatibility
+- **VisibilitySchema numeric IDs**: Validation now accepts both string and number for `restricted.parent` field
+- **Windows path handling**: `validateOutputPath()` now uses `path.sep` instead of hardcoded `/` for cross-platform compatibility
+- **Crate name regex**: Auto-detection from `Cargo.toml` now supports both single and double quotes
+- **Type reference stack overflow**: `collectTypeReferences()` now has depth limit (`MAX_TYPE_DEPTH=50`) to prevent stack overflow with deeply nested types
+- **Circular module references**: `processModule()` now tracks visited modules to detect and warn about circular hierarchies
+- **Empty sanitizePath result**: Returns `"unnamed"` if sanitization results in empty string (e.g., `"../../"`)
+- **RenderContext warning limit**: Warnings capped at `MAX_WARNINGS=100` to prevent unbounded memory growth
 
 ## [0.2.0] - 2026-02-04
 

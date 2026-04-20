@@ -157,9 +157,11 @@ describe("renderTabs", () => {
 
     const result = renderTabs(items, contents);
 
-    // Content should be indented by 4 spaces inside Tab
-    expect(result).toContain("    Line 1");
-    expect(result).toContain("    Line 2");
+    // Content should NOT be indented to avoid MDX rendering as code blocks
+    // (4+ spaces in MDX triggers code block rendering)
+    expect(result).toContain("Line 1");
+    expect(result).toContain("Line 2");
+    expect(result).not.toContain("    Line 1"); // No 4-space indentation
   });
 });
 

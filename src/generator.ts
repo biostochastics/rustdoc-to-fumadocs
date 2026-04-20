@@ -35,6 +35,12 @@ const MAX_RECURSION_DEPTH = 100;
 const MAX_WARNINGS = 50;
 
 /**
+ * Maximum depth for type reference traversal.
+ * Prevents stack overflow from deeply nested generic types.
+ */
+const MAX_TYPE_DEPTH = 50;
+
+/**
  * Centralized ordering of item kinds for consistent display across the generator.
  * This order is used for table of contents, meta.json navigation, and kind-based grouping.
  */
@@ -94,6 +100,11 @@ export function sanitizePath(segment: string): string {
       // No extension or very long extension - just truncate
       sanitized = sanitized.slice(0, MAX_FILENAME_LENGTH);
     }
+  }
+
+  // Final check: if sanitization resulted in empty string (e.g., "../../"), return "unnamed"
+  if (!sanitized || sanitized.trim() === "") {
+    return "unnamed";
   }
 
   return sanitized;
@@ -332,8 +343,9 @@ export class RustdocGenerator {
       });
     }
 
-    // Process the root module recursively
-    this.processModule(rootItem, [], files);
+    // Process the root module recursively with visited set for circular reference detection
+    const visited = new Set<string>();
+    this.processModule(rootItem, [], files, 0, visited);
 
     return files;
   }
@@ -343,11 +355,12 @@ export class RustdocGenerator {
    *
    * This method performs a depth-first traversal of the module hierarchy:
    * 1. Validates recursion depth to prevent stack overflow
-   * 2. Collects and categorizes child items by kind (struct, enum, function, etc.)
-   * 3. Recursively processes submodules (incrementing depth)
-   * 4. Generates index page for the module (if enabled)
-   * 5. Generates meta.json for FumaDocs navigation
-   * 6. Generates individual item pages based on groupBy mode
+   * 2. Detects circular module references via visited set
+   * 3. Collects and categorizes child items by kind (struct, enum, function, etc.)
+   * 4. Recursively processes submodules (incrementing depth)
+   * 5. Generates index page for the module (if enabled)
+   * 6. Generates meta.json for FumaDocs navigation
+   * 7. Generates individual item pages based on groupBy mode
    *
    * Items are filtered using the configured filter function, and implementations
    * (impls) are skipped here since they're rendered with their associated types.
@@ -356,13 +369,21 @@ export class RustdocGenerator {
    * @param parentPath - Array of ancestor module names forming the path
    * @param files - Accumulator array for generated files (mutated)
    * @param depth - Current recursion depth for overflow protection (default: 0)
+   * @param visited - Set of visited module IDs for circular reference detection
    *
    * @remarks
    * - Module names are sanitized via `sanitizePath()` to prevent directory traversal
    * - Unknown item kinds are skipped with a warning for forward compatibility
    * - Missing item references are tracked and summarized at the end
+   * - Circular module references are detected and warned about
    */
-  private processModule(item: Item, parentPath: string[], files: GeneratedFile[], depth = 0): void {
+  private processModule(
+    item: Item,
+    parentPath: string[],
+    files: GeneratedFile[],
+    depth = 0,
+    visited = new Set<string>()
+  ): void {
     // Prevent stack overflow from deeply nested or circular module hierarchies
     if (depth > MAX_RECURSION_DEPTH) {
       this.warn(
@@ -371,6 +392,14 @@ export class RustdocGenerator {
       );
       return;
     }
+
+    // Detect circular module references
+    const itemKey = String(item.id);
+    if (visited.has(itemKey)) {
+      this.warn(`Circular module reference detected: ${item.name ?? itemKey}. Skipping.`);
+      return;
+    }
+    visited.add(itemKey);
 
     // Check for module type with proper warning for unexpected items
     if (!("module" in item.inner)) {
@@ -413,7 +442,7 @@ export class RustdocGenerator {
 
       // Recursively process submodules with incremented depth
       if (kind === "module") {
-        this.processModule(childItem, modulePath, files, depth + 1);
+        this.processModule(childItem, modulePath, files, depth + 1, visited);
         continue;
       }
 
@@ -854,15 +883,24 @@ export class RustdocGenerator {
    * - `raw_pointer`: Raw pointers - recurses into pointee type
    * - `impl_trait`: Impl trait bounds - extracts trait IDs
    * - `dyn_trait`: Dyn trait objects - extracts trait IDs
+   * - `function_pointer`: Function pointer types - recurses into params and return
+   * - `qualified_path`: Associated types - extracts self type references
    *
    * @param type - The rustdoc Type to extract references from
    * @param refs - Set to accumulate type IDs (mutated in place)
+   * @param depth - Current recursion depth for overflow protection (default: 0)
    *
    * @remarks
    * This method handles the discriminated union of Type variants defined in types.ts.
    * Unknown type variants are silently ignored for forward compatibility.
+   * Depth limiting prevents stack overflow from deeply nested generic types.
    */
-  private collectTypeReferences(type: Type, refs: Set<Id>): void {
+  private collectTypeReferences(type: Type, refs: Set<Id>, depth = 0): void {
+    // Prevent stack overflow from deeply nested types (e.g., Box<Box<Box<...>>>)
+    if (depth > MAX_TYPE_DEPTH) {
+      return;
+    }
+
     if ("resolved_path" in type) {
       refs.add(type.resolved_path.id);
       // Also collect generic arguments
@@ -871,23 +909,23 @@ export class RustdocGenerator {
         if ("angle_bracketed" in args) {
           for (const arg of args.angle_bracketed.args) {
             if ("type" in arg) {
-              this.collectTypeReferences(arg.type, refs);
+              this.collectTypeReferences(arg.type, refs, depth + 1);
             }
           }
         }
       }
     } else if ("borrowed_ref" in type) {
-      this.collectTypeReferences(type.borrowed_ref.type, refs);
+      this.collectTypeReferences(type.borrowed_ref.type, refs, depth + 1);
     } else if ("tuple" in type) {
       for (const t of type.tuple) {
-        this.collectTypeReferences(t, refs);
+        this.collectTypeReferences(t, refs, depth + 1);
       }
     } else if ("slice" in type) {
-      this.collectTypeReferences(type.slice, refs);
+      this.collectTypeReferences(type.slice, refs, depth + 1);
     } else if ("array" in type) {
-      this.collectTypeReferences(type.array.type, refs);
+      this.collectTypeReferences(type.array.type, refs, depth + 1);
     } else if ("raw_pointer" in type) {
-      this.collectTypeReferences(type.raw_pointer.type, refs);
+      this.collectTypeReferences(type.raw_pointer.type, refs, depth + 1);
     } else if ("impl_trait" in type) {
       for (const bound of type.impl_trait) {
         if ("trait_bound" in bound) {
@@ -898,6 +936,18 @@ export class RustdocGenerator {
       for (const polyTrait of type.dyn_trait.traits) {
         refs.add(polyTrait.trait.id);
       }
+    } else if ("function_pointer" in type) {
+      // Traverse function pointer parameter and return types
+      const fnPtr = type.function_pointer;
+      for (const [, paramType] of fnPtr.sig.inputs) {
+        this.collectTypeReferences(paramType, refs, depth + 1);
+      }
+      if (fnPtr.sig.output) {
+        this.collectTypeReferences(fnPtr.sig.output, refs, depth + 1);
+      }
+    } else if ("qualified_path" in type) {
+      // Traverse qualified path self type
+      this.collectTypeReferences(type.qualified_path.self_type, refs, depth + 1);
     }
   }
 
@@ -1034,13 +1084,16 @@ export class RustdocGenerator {
         continue;
       }
 
-      // Match #[cfg(feature = "...")] or #[cfg(feature = '...')] or cfg_attr with feature
+      // Match cfg(feature = "...") and cfg_attr(feature = "...", ...)
+      // Also handles cfg_attr(not(feature = "..."), ...) and similar patterns
       // Support both double and single quotes for compatibility with different rustdoc versions
-      const doubleQuoteMatch = /cfg\s*\(\s*feature\s*=\s*"([^"]+)"\s*\)/.exec(attrStr);
+      const doubleQuoteMatch =
+        /(?:cfg|cfg_attr)\s*\(\s*(?:not\s*\(\s*)?feature\s*=\s*"([^"]+)"/.exec(attrStr);
       if (doubleQuoteMatch) {
         return doubleQuoteMatch[1];
       }
-      const singleQuoteMatch = /cfg\s*\(\s*feature\s*=\s*'([^']+)'\s*\)/.exec(attrStr);
+      const singleQuoteMatch =
+        /(?:cfg|cfg_attr)\s*\(\s*(?:not\s*\(\s*)?feature\s*=\s*'([^']+)'/.exec(attrStr);
       if (singleQuoteMatch) {
         return singleQuoteMatch[1];
       }
