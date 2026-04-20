@@ -1681,7 +1681,10 @@ export class RustdocGenerator {
           args: implDef.trait.args,
         },
       };
-      header += ` ${formatType(traitType)} for`;
+      // `impl !Send for T` must not render as `impl Send for T` — the `!`
+      // flips the semantic.
+      const negate = implDef.is_negative ? "!" : "";
+      header += ` ${negate}${formatType(traitType)} for`;
     }
     header += ` ${formatType(implDef.for)}`;
 

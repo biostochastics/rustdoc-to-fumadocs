@@ -8,8 +8,9 @@
  */
 
 import { readFile, readdir } from "node:fs/promises";
-import { join, resolve, sep } from "node:path";
+import { join, resolve, sep, isAbsolute } from "node:path";
 import { parse as parseToml } from "smol-toml";
+import { stringify as stringifyYaml } from "yaml";
 import { RustdocError, ErrorCode } from "./errors.js";
 
 /**
@@ -45,6 +46,9 @@ function tomlStringArray(value: unknown): string[] {
  * workspace manifests and intentionally not supported here.
  */
 async function expandMemberPattern(rootDir: string, pattern: string): Promise<string[]> {
+  // Refuse absolute paths: they'd escape the workspace root, which is
+  // never what Cargo itself allows. Treat as an unrecognized pattern.
+  if (isAbsolute(pattern)) return [];
   if (!pattern.includes("*")) {
     return [resolve(rootDir, pattern)];
   }
@@ -235,23 +239,40 @@ export function renderWorkspaceMeta(members: WorkspaceMember[], title = "API"): 
 }
 
 /**
- * Render the top-level workspace landing page.
+ * Escape a member name for safe inclusion in a markdown inline-code span.
+ * Rust crate names can't legally contain backticks, but we're defensive
+ * against adversarial rustdoc JSON or manifest tampering.
+ */
+function escapeCode(name: string): string {
+  return name.replace(/`/g, "\\`");
+}
+
+/**
+ * Render the top-level workspace landing page. The frontmatter is written
+ * by the `yaml` package, so workspace/crate names containing `"`, `:`,
+ * newlines, or other YAML metacharacters can't break parsing.
  */
 export function renderWorkspaceIndex(workspaceName: string, members: WorkspaceMember[]): string {
+  const frontmatter = stringifyYaml(
+    {
+      title: workspaceName,
+      description: `API reference for the ${workspaceName} workspace (${members.length} crate${members.length === 1 ? "" : "s"})`,
+      icon: "Folder",
+    },
+    { defaultStringType: "QUOTE_DOUBLE", defaultKeyType: "PLAIN" }
+  );
   const lines: string[] = [
     "---",
-    `title: "${workspaceName}"`,
-    `description: "API reference for the ${workspaceName} workspace (${members.length} crate${members.length === 1 ? "" : "s"})"`,
-    `icon: "Folder"`,
+    frontmatter.trimEnd(),
     "---",
     "",
-    `# ${workspaceName}`,
+    `# ${escapeCode(workspaceName)}`,
     "",
     `This workspace contains **${members.length}** crate${members.length === 1 ? "" : "s"}:`,
     "",
   ];
   for (const m of members) {
-    lines.push(`- [\`${m.name}\`](./${m.name})`);
+    lines.push(`- [\`${escapeCode(m.name)}\`](./${encodeURIComponent(m.name)})`);
   }
   lines.push("");
   return lines.join("\n");

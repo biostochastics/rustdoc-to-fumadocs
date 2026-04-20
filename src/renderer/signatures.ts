@@ -207,9 +207,38 @@ export function formatGenericParam(param: GenericParamDef): string {
     // Lifetime names in rustdoc JSON already include the leading '
     // e.g., { "name": "'de", "kind": { "lifetime": { "outlives": [] } } }
     // Don't add another ' if it's already there
-    return param.name.startsWith("'") ? param.name : `'${param.name}`;
+    const lt = param.name.startsWith("'") ? param.name : `'${param.name}`;
+    const { outlives } = param.kind.lifetime;
+    if (outlives.length > 0) {
+      const formatted = outlives.map((l) => (l.startsWith("'") ? l : `'${l}`)).join(" + ");
+      return `${lt}: ${formatted}`;
+    }
+    return lt;
   }
-  return param.name;
+  if ("const" in param.kind) {
+    // Const generics: render the type and any default. Dropping either
+    // would change the API contract readers see, e.g. `<const N: usize>`
+    // vs `<N>`, or `<const CAP: usize = 16>` vs `<CAP>`.
+    const cg = param.kind.const;
+    const typeStr = formatType(cg.type);
+    // rustdoc serializes "no default" as either the field being absent
+    // *or* as literal `null` (impl blocks get null for redeclared params).
+    return cg.default != null
+      ? `const ${param.name}: ${typeStr} = ${cg.default}`
+      : `const ${param.name}: ${typeStr}`;
+  }
+  // Type parameter: may carry inline bounds (`T: Clone + Debug`) and/or a
+  // default (`T = String`). Both are load-bearing for API documentation.
+  const tk = param.kind.type;
+  let s = param.name;
+  if (tk.bounds.length > 0) {
+    const bounds = tk.bounds.map((b) => formatGenericBound(b)).filter(Boolean);
+    if (bounds.length > 0) s += `: ${bounds.join(" + ")}`;
+  }
+  if (tk.default != null) {
+    s += ` = ${formatType(tk.default)}`;
+  }
+  return s;
 }
 
 /**
@@ -235,7 +264,17 @@ export function formatWherePredicate(pred: WherePredicate): string {
     const bp = pred.bound_predicate;
     const bounds = bp.bounds.map((b) => formatGenericBound(b)).filter(Boolean);
     if (bounds.length === 0) return "";
-    return `${formatType(bp.type)}: ${bounds.join(" + ")}`;
+    // Preserve higher-ranked binder on the predicate, e.g.
+    // `where for<'a> F: Fn(&'a T) -> &'a U`.
+    const hrtb =
+      bp.generic_params.length > 0
+        ? `for<${bp.generic_params
+            .map((p) =>
+              "lifetime" in p.kind ? (p.name.startsWith("'") ? p.name : `'${p.name}`) : p.name
+            )
+            .join(", ")}> `
+        : "";
+    return `${hrtb}${formatType(bp.type)}: ${bounds.join(" + ")}`;
   }
   if ("lifetime_predicate" in pred) {
     const lp = pred.lifetime_predicate;

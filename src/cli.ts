@@ -471,6 +471,22 @@ async function runWorkspace(
     }
     log(`  ${member.name}: ${jsonPath}`);
 
+    // Match the single-crate path's size guard — a multi-GB member JSON
+    // would otherwise OOM the entire workspace run before any output
+    // landed to disk.
+    try {
+      const st = await stat(jsonPath);
+      if (st.size > MAX_INPUT_SIZE_BYTES) {
+        skipped.push({
+          name: member.name,
+          reason: `JSON exceeds ${Math.round(MAX_INPUT_SIZE_BYTES / 1024 / 1024)}MB cap (${Math.round(st.size / 1024 / 1024)}MB)`,
+        });
+        continue;
+      }
+    } catch {
+      // stat failed — let readFile produce the real error below.
+    }
+
     let content: string;
     try {
       content = await readFile(jsonPath, "utf-8");
