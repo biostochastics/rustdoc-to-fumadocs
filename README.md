@@ -16,7 +16,7 @@
   <a href="https://eslint.org/"><img src="https://img.shields.io/badge/ESLint-v9-4B32C3" alt="ESLint: v9"></a>
   <a href="https://prettier.io/"><img src="https://img.shields.io/badge/code_style-Prettier-ff69b4" alt="Code style: Prettier"></a>
   <a href="https://vitest.dev/"><img src="https://img.shields.io/badge/tests-Vitest-yellow" alt="Tests: Vitest"></a>
-  <img src="https://img.shields.io/badge/tests-222%20passing-brightgreen" alt="222 tests passing">
+  <img src="https://img.shields.io/badge/tests-284%20passing-brightgreen" alt="284 tests passing">
 </p>
 
 ---
@@ -70,16 +70,17 @@ rustdoc-to-fumadocs converts Rust's `rustdoc` JSON output into [FumaDocs](https:
 
 ## At a Glance
 
-| Feature             | Description                                                |
-| ------------------- | ---------------------------------------------------------- |
-| **FumaDocs v14+**   | Full support for icons, separators, Callouts, Tabs, Cards  |
-| **Validation**      | Zod schemas with helpful error messages and hints          |
-| **Error Handling**  | Structured errors with codes, hints, and recovery context  |
-| **Components**      | Deprecation, Safety, Panics, Errors, Feature Gate callouts |
-| **Navigation**      | auto-generated meta.json with icons and separators         |
-| **Flexible Output** | Group by module, kind, or flat structure                   |
-| **CI-Friendly**     | Dry-run mode, JSON output, progress indicators             |
-| **Security**        | Path traversal prevention, input limits, sanitization      |
+| Feature              | Description                                                  |
+| -------------------- | ------------------------------------------------------------ |
+| **FumaDocs v14+**    | Full support for icons, separators, Callouts, Tabs, Cards    |
+| **Cargo workspaces** | `--workspace` processes every member into one FumaDocs tree  |
+| **Validation**       | Zod schemas with helpful error messages and hints            |
+| **Error Handling**   | Structured errors with codes, hints, and recovery context    |
+| **Components**       | Deprecation, Safety, Panics, Errors, Feature Gate callouts   |
+| **Navigation**       | auto-generated meta.json with icons and separators           |
+| **Flexible Output**  | Group by module, kind, or flat structure                     |
+| **CI-Friendly**      | Dry-run mode, JSON output, progress indicators               |
+| **Security**         | Path traversal prevention, input limits, log-injection guard |
 
 ### Rustdoc Format Compatibility
 
@@ -127,7 +128,7 @@ npx tsx src/cli.ts --input /path/to/target/doc/my_crate.json --output content/do
 ### Verify Installation
 
 ```bash
-npm run test:run    # Run 222 tests
+npm run test:run    # Run 284 tests
 npm run build       # Compile TypeScript
 ```
 
@@ -142,6 +143,9 @@ USAGE:
 OPTIONS:
   -i, --input <path>      Path to rustdoc JSON file
   -c, --crate <name>      Crate name (auto-finds target/doc/<name>.json)
+  -w, --workspace [dir]   Treat <dir> (or cwd) as a Cargo workspace root and
+                          generate docs for every [workspace].members entry.
+                          Overrides --input/--crate.
   -o, --output <dir>      Output directory (default: content/docs/api)
   -b, --base-url <url>    Base URL for docs (default: /docs/api)
   -g, --group-by <mode>   Group by: module | kind | flat (default: module)
@@ -150,6 +154,7 @@ OPTIONS:
   --no-cards              Disable Cards component for cross-references
   -n, --dry-run           Preview output without writing files
   --json                  JSON output for CI/scripting
+  -v, --verbose           Show verbose output
   -h, --help              Show help message
 ```
 
@@ -167,6 +172,10 @@ rustdoc-to-fumadocs --crate my_crate --dry-run
 
 # JSON output for CI pipelines
 rustdoc-to-fumadocs --crate my_crate --json | jq '.stats'
+
+# Whole Cargo workspace (one output subdir per member crate)
+cargo doc --workspace --no-deps  # with the JSON RUSTDOCFLAGS
+rustdoc-to-fumadocs --workspace --output docs/api
 ```
 
 ---
@@ -329,7 +338,7 @@ Output: `target/doc/<crate_name>.json`
 npm install          # Install dependencies
 npm run build        # Compile TypeScript
 npm run test         # Watch mode
-npm run test:run     # Single run (222 tests)
+npm run test:run     # Single run (284 tests)
 npm run test:coverage # Coverage report
 npm run lint         # ESLint
 npm run format       # Prettier
@@ -342,7 +351,8 @@ npm run format       # Prettier
 | validation.ts          | 100%     |
 | renderer/components.ts | 100%     |
 | renderer/types.ts      | 99%      |
-| **Overall**            | ~61%     |
+| workspace.ts           | 95%      |
+| **Overall**            | ~62%     |
 
 ---
 
@@ -421,29 +431,29 @@ The generated files are **deployment-ready** for FumaDocs v14+ projects. Follow 
 
 ### Content Caveats
 
-| Issue                           | Symptom                           | Cause                                        | Resolution                        |
-| ------------------------------- | --------------------------------- | -------------------------------------------- | --------------------------------- |
-| **`undefined` types**           | Type links show as `undefined`    | External crate types not in local index      | Manual editing or link to docs.rs |
-| **Simplified async signatures** | Complex lifetimes abbreviated     | Async return types with many lifetime params | Rarely affects readability        |
-| **Missing trait impls**         | Some trait implementations absent | Filtered as blanket/synthetic                | Check if impl is truly needed     |
-| **Broken intra-doc links**      | Links to external crates fail     | External types not resolved                  | Links redirect to docs.rs         |
+| Issue                           | Symptom                           | Cause                                         | Resolution                                            |
+| ------------------------------- | --------------------------------- | --------------------------------------------- | ----------------------------------------------------- |
+| **Associated type fallback**    | `<Self as ?>::Err` in signatures  | External trait not in the local `paths` table | Expected for items whose trait lives in another crate |
+| **Simplified async signatures** | Complex lifetimes abbreviated     | Async return types with many lifetime params  | Rarely affects readability                            |
+| **Missing trait impls**         | Some trait implementations absent | Filtered as blanket/synthetic                 | Check if impl is truly needed                         |
+| **Broken intra-doc links**      | Links to external crates fail     | External types not resolved                   | Links redirect to docs.rs                             |
 
 ### When to Expect Manual Editing
 
-- **Heavy external dependencies**: Crates using many types from other crates will have `undefined` references
 - **Complex generic bounds**: Deeply nested generics may render with simplified notation
 - **Custom formatting**: If you need different component styles or layouts
 
 ### Tested Compatibility
 
-Generated output verified against real-world crates:
+Generated output verified against real-world crates (format v57):
 
-| Crate          | Complexity              | Files | Status   |
-| -------------- | ----------------------- | ----- | -------- |
-| **syn**        | High (complex generics) | 148   | ✅ Works |
-| **tokio**      | High (async types)      | 76    | ✅ Works |
-| **serde_core** | Medium (trait-heavy)    | 57    | ✅ Works |
-| **anyhow**     | Low (simple API)        | 9     | ✅ Works |
+| Crate            | Complexity                             | Files | Status   |
+| ---------------- | -------------------------------------- | ----- | -------- |
+| **syn**          | High (complex generics)                | 148   | ✅ Works |
+| **tokio**        | High (async types)                     | 76    | ✅ Works |
+| **serde_core**   | Medium (trait-heavy)                   | 57    | ✅ Works |
+| **anyhow**       | Low (simple API)                       | 10    | ✅ Works |
+| Cargo workspaces | Multi-crate with `[workspace].members` | —     | ✅ Works |
 
 ---
 
