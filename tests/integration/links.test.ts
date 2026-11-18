@@ -75,4 +75,19 @@ describe.each(FORMATS)("repository-relative and cross-crate links (%s)", (format
     const root = fileMap(gen.generate()).get("kitchen_sink/index.mdx") ?? "";
     expect(root).toContain("[`BTreeMap`](/docs/api/alloc/BTreeMap)");
   });
+
+  it("resolves docstring links through sibling pages set after the page index", () => {
+    const crate = loadCrate(`kitchen_sink.${format}.json`);
+    const gen = new RustdocGenerator(crate, { output: "/tmp/x", baseUrl: "/docs/api" });
+    // Circle is re-exported at the root, so its docs are read while planning.
+    gen.pageIndex();
+    gen.setExternalPages(new Map([["alloc::vec::Vec", "/docs/api/alloc/Vec"]]));
+    const files = fileMap(gen.generate());
+    expect(files.get("kitchen_sink/shapes/Circle.mdx")).toContain("[`Vec`](/docs/api/alloc/Vec)");
+    // Summaries (first doc line) on index pages and in the Re-exports list.
+    for (const index of ["kitchen_sink/shapes/index.mdx", "kitchen_sink/index.mdx"]) {
+      const line = (files.get(index) ?? "").split("\n").find((l) => l.startsWith("- [`Circle`]"));
+      expect(line).toContain("[`Vec`](/docs/api/alloc/Vec)");
+    }
+  });
 });

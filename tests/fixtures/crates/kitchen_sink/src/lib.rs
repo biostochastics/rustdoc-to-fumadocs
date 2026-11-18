@@ -42,7 +42,7 @@ mod private {
 
 /// Shapes live here.
 pub mod shapes {
-    /// A circle. Compare with [`Square`].
+    /// A circle. Compare with [`Square`]; radii are stored like [`Vec`] lengths.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub struct Circle {
         /// Radius in millimetres.

@@ -104,7 +104,8 @@ interface ReexportEntry {
   href: string | null;
   /** Target id of an external re-export, resolved when the index renders. */
   targetId?: Id;
-  docs?: string;
+  /** Local target, whose summary line is read when the index renders. */
+  target?: Item;
   kind?: string;
 }
 
@@ -827,6 +828,8 @@ export class RustdocGenerator {
    */
   setExternalPages(pages: Map<string, string>): void {
     this.options.externalPages = pages;
+    // Docstrings processed so far resolved their links without these pages.
+    this.docsCache.clear();
   }
 
   /**
@@ -1138,7 +1141,7 @@ export class RustdocGenerator {
         source,
         isGlob: false,
         href: existing,
-        docs: firstLine(this.docsFor(target, 0)),
+        target,
         kind,
       });
       return;
@@ -1464,7 +1467,8 @@ export class RustdocGenerator {
             ? ""
             : ` (from \`${re.source}\`)`;
         const glob = re.isGlob ? "" : from;
-        const desc = re.docs ? ` - ${re.docs}` : "";
+        const summary = re.target ? firstLine(this.docsFor(re.target, 0)) : "";
+        const desc = summary ? ` - ${summary}` : "";
         sections.push(`- ${link}${glob}${desc}`);
       }
       sections.push("");
