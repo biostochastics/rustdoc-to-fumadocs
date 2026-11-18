@@ -392,14 +392,17 @@ export interface Path {
 
 /**
  * Returns the display name of a rustdoc `Path`, handling the v57 `name` → `path` rename.
- * Strips `$crate::` prefixes that leak from derive-macro expansions
- * (e.g. `$crate::fmt::Formatter` → `fmt::Formatter`).
+ * Strips the `$crate::` prefixes that leak from macro expansions
+ * (e.g. `$crate::fmt::Formatter` → `fmt::Formatter`) and `crate::` prefixes
+ * written in signatures (`crate::error::ParseError` → `error::ParseError`).
  * Falls back to `"?"` only when both fields are absent (malformed input).
  */
 export function getPathName(p: Path): string {
   const raw =
     [p.path, p.name].find((s): s is string => typeof s === "string" && s.length > 0) ?? "?";
-  return raw.startsWith("$crate::") ? raw.slice("$crate::".length) : raw;
+  if (raw.startsWith("$crate::")) return raw.slice("$crate::".length);
+  if (raw.startsWith("crate::")) return raw.slice("crate::".length);
+  return raw;
 }
 
 export interface DynTrait {

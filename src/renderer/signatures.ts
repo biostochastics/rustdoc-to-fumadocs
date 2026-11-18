@@ -170,8 +170,13 @@ export function formatTraitSignature(name: string, trait: Trait): string {
   let sig = "";
   if (trait.is_unsafe) sig += "unsafe ";
   sig += `trait ${name}${formatGenerics(trait.generics)}`;
-  if (trait.bounds.length > 0) {
-    sig += ": ...";
+  const bounds = trait.bounds.map((b) => formatGenericBound(b)).filter(Boolean);
+  if (bounds.length > 0) {
+    sig += `: ${bounds.join(" + ")}`;
+  }
+  if (trait.generics.where_predicates.length > 0) {
+    const where = trait.generics.where_predicates.map(formatWherePredicate).filter(Boolean);
+    if (where.length > 0) sig += ` where ${where.join(", ")}`;
   }
   sig += " { ... }";
   return sig;
@@ -190,9 +195,12 @@ export function formatTraitSignature(name: string, trait: Trait): string {
  * ```
  */
 export function formatGenerics(generics: Generics): string {
-  if (generics.params.length === 0) return "";
-
-  const params = generics.params.map((p) => formatGenericParam(p));
+  // Synthetic params are rustdoc's desugaring of `impl Trait` arguments
+  // (`fn f(x: impl Into<String>)`); the argument already shows them.
+  const params = generics.params
+    .filter((p) => !("type" in p.kind && p.kind.type.is_synthetic))
+    .map((p) => formatGenericParam(p));
+  if (params.length === 0) return "";
   return `<${params.join(", ")}>`;
 }
 
