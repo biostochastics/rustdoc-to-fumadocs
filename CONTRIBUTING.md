@@ -80,6 +80,7 @@ Run tests:
 npm run test           # Watch mode
 npm run test:run       # Single run
 npm run test:coverage  # With coverage
+npm run test:package   # Install the tarball and exercise the CLI and library
 ```
 
 Pull requests targeting `main` and pushes to `main` run formatting, lint, typechecking, coverage, and installed-package checks on one Node 24 Ubicloud runner.

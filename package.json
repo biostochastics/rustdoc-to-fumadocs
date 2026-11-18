@@ -1,6 +1,6 @@
 {
   "name": "rustdoc-to-fumadocs",
-  "version": "0.5.1",
+  "version": "0.6.0",
   "description": "Generate linked Fumadocs MDX API references from rustdoc JSON for Rust crates and Cargo workspaces.",
   "keywords": [
     "rustdoc",
@@ -66,6 +66,7 @@
     "release": "npm run build && changeset publish",
     "prepare": "husky",
     "prepack": "npm run build",
+    "test:package": "bash scripts/test-package.sh",
     "test:rust": "bash scripts/test-rust.sh",
     "test:fumadocs": "bash scripts/test-fumadocs.sh",
     "test:crates": "bash scripts/test-real-crates.sh"

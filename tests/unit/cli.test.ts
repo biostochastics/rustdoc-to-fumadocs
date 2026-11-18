@@ -18,7 +18,7 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve, dirname, sep } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import {
   parseArgs,
   validateOutputPath,
@@ -401,7 +401,7 @@ describe("run() - --crate auto-detection", () => {
     const code = await run(["--crate", "does_not_exist"], streams);
     expect(code).toBe(1);
     expect(stderr()).toMatch(/Could not find rustdoc JSON/);
-    expect(stderr()).toMatch(/target\/doc\/does_not_exist\.json/);
+    expect(stderr()).toContain(join("target", "doc", "does_not_exist.json"));
   });
 
   it("finds rustdoc JSON in target/doc/<crate>.json", async () => {
@@ -717,7 +717,7 @@ describe("isDirectInvocation", () => {
       await writeFile(target, "", "utf-8");
       const link = join(dir, "rustdoc-to-fumadocs");
       await symlink(target, link);
-      const moduleUrl = new URL(`file://${target}`).href;
+      const moduleUrl = pathToFileURL(target).href;
       expect(isDirectInvocation(link, moduleUrl)).toBe(true);
       expect(isDirectInvocation(target, moduleUrl)).toBe(true);
       expect(isDirectInvocation(join(dir, "other.js"), moduleUrl)).toBe(false);
