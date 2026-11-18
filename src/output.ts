@@ -4,6 +4,7 @@ import {
   lstat,
   mkdir,
   mkdtemp,
+  readdir,
   readFile,
   realpath,
   rename,
@@ -102,6 +103,7 @@ async function ownedFiles(path: string): Promise<Manifest> {
 
 /** Stage each member independently. Publish only after every page has been generated. */
 export class OutputTransaction {
+  private preparationError?: Error;
   private preserveBackup = false;
   private pages = new Map<string, string>();
   private dirs = new Map<string, Promise<unknown>>();
@@ -126,6 +128,7 @@ export class OutputTransaction {
   }
 
   async add(files: GeneratedFile[]): Promise<void> {
+    if (this.preparationError) throw this.preparationError;
     try {
       for (const { path, content } of files) {
         checkedPage(path);
@@ -164,7 +167,8 @@ export class OutputTransaction {
         }
       }
     } catch (err) {
-      throw outputWriteError(this.root, err as Error);
+      this.preparationError = outputWriteError(this.root, err as Error);
+      throw this.preparationError;
     }
   }
 
@@ -190,24 +194,78 @@ export class OutputTransaction {
     this.deferred = [];
   }
 
-  private async destination(path: string, createParents = true) {
+  private async destination(path: string, createdDirs?: Set<string>) {
+    const dest = validateOutputPath(this.root, path);
     let dir = this.root;
     const parts = path.split("/");
     for (const segment of parts.slice(0, -1)) {
       dir = join(dir, segment);
       const st = await existing(dir);
       if (st && !st.isDirectory()) throw new Error(`Output parent must be a directory: ${dir}`);
-      if (!st && createParents) await mkdir(dir);
+      if (!st) {
+        if (!createdDirs) return { dest, stat: undefined };
+        await mkdir(dir);
+        createdDirs.add(dir);
+      }
     }
-    const dest = validateOutputPath(this.root, path);
     const st = await existing(dest);
     if (st && !st.isFile()) throw new Error(`Output destination must be a regular file: ${dest}`);
     return { dest, stat: st };
   }
 
+  /** A fresh crate under one missing directory can be installed by a single
+   * rename. Confirm that the private staging tree contains exactly its pages
+   * before moving the directory into the live output. */
+  private async freshDirectory() {
+    const first = this.pages.keys().next().value;
+    if (!first?.includes("/")) return;
+    const dir = first.slice(0, first.indexOf("/"));
+    if (await existing(validateOutputPath(this.root, dir))) return;
+    const expected = new Set(this.pages.keys());
+    // The iterator visits inserted parents too, up to the common directory.
+    for (const path of expected) {
+      if (path === dir) continue;
+      if (!path.startsWith(dir + "/")) return;
+      expected.add(path.slice(0, path.lastIndexOf("/")));
+    }
+    expected.delete(dir);
+    const staged = join(this.stage, "new");
+    if (!(await lstat(join(staged, dir))).isDirectory()) {
+      throw new Error(`Expected a staged directory: ${dir}`);
+    }
+    const directories = [join(this.root, dir)];
+    for (const entry of await readdir(join(staged, dir), {
+      withFileTypes: true,
+      recursive: true,
+    })) {
+      const path = relative(staged, join(entry.parentPath, entry.name)).split(sep).join("/");
+      if (!expected.delete(path)) return;
+      if (this.pages.has(path) ? !entry.isFile() : !entry.isDirectory()) {
+        throw new Error(`Unexpected staged entry type: ${path}`);
+      }
+      if (entry.isDirectory()) directories.push(join(this.root, path));
+    }
+    if (!expected.size) return { dir, directories };
+  }
+
+  /** Two manifest spellings may name one directory entry on this volume. */
+  private async sharesDestination(dest: string, aliases: string[]): Promise<boolean> {
+    const canonical = await realpath(dest);
+    for (const alias of aliases) {
+      try {
+        if ((await realpath(validateOutputPath(this.root, alias))) === canonical) return true;
+      } catch (err) {
+        if (!missing(err)) throw err;
+      }
+    }
+    return false;
+  }
+
   async commit(owner: string, prune = true) {
+    if (this.preparationError) throw this.preparationError;
     const lock = join(this.root, ".rustdoc-to-fumadocs.lock");
     const applied: { dest: string; backup?: string; installed: boolean }[] = [];
+    const createdDirs = new Set<string>();
     try {
       await mkdir(lock);
     } catch (err) {
@@ -220,29 +278,40 @@ export class OutputTransaction {
         : (Object.create(null) as Manifest);
       const old = manifest[owner] ?? {};
       const next = Object.fromEntries(this.pages);
-      const otherPaths = new Set(
-        Object.entries(manifest)
-          .filter(([key]) => key !== owner)
-          .flatMap(([, files]) => Object.keys(files))
-      );
       // Build the map in publication order before the concurrent read-only checks.
       const changes = new Map<string, boolean>();
       let ownershipChanged =
         !Object.hasOwn(manifest, owner) || (prune && Object.keys(old).length !== this.pages.size);
+      // Remove stale spellings before installing replacements: two spellings
+      // can address the same live file on a case-insensitive filesystem.
+      const aliases = new Map<string, string[]>();
+      const folded = (path: string) => path.normalize("NFC").toLowerCase();
+      if (prune) {
+        for (const path of Object.keys(old)) if (!this.pages.has(path)) changes.set(path, false);
+      }
+      if (changes.size) {
+        for (const path of changes.keys()) aliases.set(folded(path), []);
+        for (const [key, files] of Object.entries(manifest)) {
+          if (key === owner) continue;
+          for (const path of Object.keys(files)) {
+            changes.delete(path);
+            aliases.get(folded(path))?.push(path);
+          }
+        }
+      }
       for (const [path, hash] of this.pages) {
         changes.set(path, true);
         if (hash !== old[path]) ownershipChanged = true;
       }
-      if (prune)
-        for (const path of Object.keys(old)) {
-          if (!this.pages.has(path) && !otherPaths.has(path)) changes.set(path, false);
-        }
       await inBatches(changes, async ([path, install]) => {
-        const { dest, stat } = await this.destination(path, false);
+        const { dest, stat } = await this.destination(path);
         if (install && old[path] !== next[path]) return;
         const matches = !!stat && (await fileDigest(dest, stat.size)) === old[path];
-        const needsChange = install ? !matches : matches;
-        if (!needsChange) changes.delete(path);
+        if (install ? matches : !matches) changes.delete(path);
+        else if (!install && aliases.size) {
+          const group = aliases.get(folded(path));
+          if (group?.length && (await this.sharesDestination(dest, group))) changes.delete(path);
+        }
       });
       await this.stageChanges(changes);
       let written = 0;
@@ -258,8 +327,20 @@ export class OutputTransaction {
         await writeFile(join(this.stage, "new", MANIFEST), JSON.stringify(manifest) + "\n");
         changes.set(MANIFEST, true);
       }
+      const fresh =
+        !manifestDest.stat && !this.deferWrites ? await this.freshDirectory() : undefined;
+      if (fresh && !(await existing(join(this.root, fresh.dir)))) {
+        await rename(join(this.stage, "new", fresh.dir), join(this.root, fresh.dir));
+        for (const dir of fresh.directories) createdDirs.add(dir);
+        // Roll back individual pages so a later failure preserves unrelated
+        // files added to the new directory. The manifest is installed last.
+        for (const path of this.pages.keys()) {
+          applied.push({ dest: join(this.root, path), installed: true });
+          changes.delete(path);
+        }
+      }
       for (const [path, install] of changes) {
-        const { dest, stat } = await this.destination(path);
+        const { dest, stat } = await this.destination(path, install ? createdDirs : undefined);
         let backup: string | undefined;
         if (stat) {
           backup = join(this.stage, "backup", path);
@@ -295,6 +376,15 @@ export class OutputTransaction {
           if (step.backup) await rename(step.backup, step.dest);
         } catch (recoveryError) {
           failures.push(String(recoveryError));
+        }
+      }
+      for (const dir of [...createdDirs].sort((a, b) => b.length - a.length)) {
+        try {
+          await rmdir(dir);
+        } catch (cleanupError) {
+          const code = (cleanupError as NodeJS.ErrnoException).code;
+          if (code !== "ENOENT" && code !== "ENOTEMPTY" && code !== "EEXIST")
+            failures.push(String(cleanupError));
         }
       }
       if (failures.length) {

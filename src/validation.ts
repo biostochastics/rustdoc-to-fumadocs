@@ -133,15 +133,17 @@ const ItemSchema = z.looseObject({
  * Validates the top-level structure of rustdoc JSON output.
  * Format version is checked separately with helpful error messages.
  */
-const crateSchema = z.object({
-  root: IdSchema,
-  crate_version: z.string().nullish(),
-  includes_private: z.boolean(),
-  index: z.record(z.string(), ItemSchema),
-  paths: z.record(z.string(), ItemSummarySchema),
-  external_crates: z.record(z.string(), ExternalCrateSchema),
-  format_version: z.number().int().nonnegative(),
-});
+const crateSchema = z.compile(
+  z.object({
+    root: IdSchema,
+    crate_version: z.string().nullish(),
+    includes_private: z.boolean(),
+    index: z.record(z.string(), ItemSchema),
+    paths: z.record(z.string(), ItemSummarySchema),
+    external_crates: z.record(z.string(), ExternalCrateSchema),
+    format_version: z.number().int().nonnegative(),
+  })
+);
 
 /** Normalize older wire formats before applying the current payload checks. */
 export const RustdocCrateSchema = z.preprocess((data) => {

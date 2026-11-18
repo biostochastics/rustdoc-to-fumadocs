@@ -9,6 +9,8 @@ import {
   demoteHeadings,
   takeSection,
   summaryLine,
+  summaryMarkdown,
+  sanitizeDocstring,
   splitFences,
   looksLikeRustPath,
   type LinkResolver,
@@ -149,6 +151,40 @@ describe("summaryLine", () => {
       "See Foo and b and D. more"
     );
   });
+});
+
+it("keeps standalone opening paragraphs equivalent to full-document summaries", () => {
+  const lead = "Read the `first`\nparagraph.";
+  const body = "\n\n# Examples\n\n```rust\nlet x = 0;\n```";
+  const parse = createMarkdownParser();
+  for (const eol of ["\n", "\r\n"]) {
+    const first = lead.replaceAll("\n", eol);
+    const doc = first + body.replaceAll("\n", eol);
+    const paragraphOnly = (source: string) => {
+      expect(source).toBe(first);
+      return parse(source);
+    };
+    const original = structuredClone(parse(first));
+    expect(summaryLine(doc, paragraphOnly)).toBe("Read the first paragraph.");
+    expect(summaryMarkdown(doc, paragraphOnly)).toBe("Read the `first` paragraph.");
+    expect(parse(first)).toEqual(original);
+  }
+
+  for (const prefix of ["Heading\n======", "Column\n:-----", "# Heading", "    code"]) {
+    const doc = prefix + "\n\nSee [the guide][guide].\n\n[guide]: /guide";
+    expect(summaryLine(doc)).toBe("See the guide.");
+    expect(summaryMarkdown(doc)).toBe("See [the guide](/guide).");
+  }
+  const referenced = "See [the guide].\n\n[the guide]: /guide";
+  expect(summaryMarkdown(referenced)).toBe("See [the guide](/guide).");
+});
+
+it("preserves whitespace, autolinks and MDX escaping around ordinary sentences", () => {
+  expect(sanitizeDocstring("Returns the first value.")).toBe("Returns the first value.");
+  expect(summaryLine("Two  spaces.")).toBe("Two spaces.");
+  expect(sanitizeDocstring("Two  spaces.")).toBe("Two  spaces.");
+  expect(sanitizeDocstring("export the value")).toBe("&#x65;xport the value");
+  expect(sanitizeDocstring("www.example.org")).toContain("http://www.example.org");
 });
 
 describe("passive MDX", () => {

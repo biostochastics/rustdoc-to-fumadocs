@@ -3,7 +3,8 @@
  * index does not try every possible item or type for each entry. */
 import { z } from "zod";
 
-export const idSchema = z.union([z.string(), z.number().int().nonnegative()]);
+// Every item, reference and member list uses this union.
+export const idSchema = z.compile(z.union([z.string(), z.number().int().nonnegative()]));
 const ids = z.array(idSchema);
 const str = z.string();
 const bool = z.boolean();

@@ -2,6 +2,28 @@
 
 November 17, 2026 · rustdoc-to-fumadocs 0.5.0 and 0.5.1
 
+## Follow-up to 0.5.1
+
+The comparison starts at 0.5.1 (`959b856`), which already includes the Markdown cache, suffix cursors and batched destination checks. Each cell shows median wall time in milliseconds, from that release to this change. Runs used Node 22.17.1 on an Apple M4 Pro with a warm APFS cache. Each command started a fresh process. Build and input order varied over five measured rounds after one warm-up. [Timing and peak RSS samples](benchmarks/post-0.5.1.json)
+
+| Input                                  | JSON preview (ms) | Fresh publication (ms) | Unchanged publication (ms) |
+| -------------------------------------- | ----------------: | ---------------------: | -------------------------: |
+| `syn`                                  |         586 → 546 |              636 → 573 |                  599 → 561 |
+| `serde_core`                           |         406 → 366 |              427 → 377 |                  418 → 372 |
+| Six-crate workspace                    |       1,091 → 969 |          1,155 → 1,042 |                1,098 → 975 |
+| 262,144 additional path summaries      |         409 → 368 |              416 → 366 |                  412 → 362 |
+| 4,000 undocumented functions           |         231 → 225 |              878 → 493 |                  375 → 368 |
+| 4,000 functions with one-sentence docs |         631 → 227 |            1,280 → 505 |                  781 → 381 |
+| Minimal fixture                        |         119 → 115 |              122 → 118 |                  122 → 117 |
+
+- **Rendering.** Single-line prose with a restricted alphabet and punctuation can pass through directly. For summaries, an opening paragraph whose lines start with prose and contain no reference brackets can be parsed on its own. Formatted summaries copy only the selected paragraph’s inline nodes. Potential references, GFM tables, headings and MDX-sensitive input still go through the appropriate Markdown transforms. To reproduce the documented 4,000-function workload, build the file-count input described in the reproduction section below and set each function’s docs to `Returns value number <id>.`
+- **Validation.** The crate and item-ID schemas use Zod’s compiled parser. Legacy normalization and detailed error reporting still run through the same schemas. On the path-heavy fixture, isolated median validation time fell from 97 to 52 ms in four measured fresh processes per build after warm-up.
+- **Publication.** A first publication with one missing crate directory verifies the staged tree, renames it into place, then installs the manifest. Existing directories and workspace roots use the per-file merge. With 4,002 files already rendered, median commit and cleanup fell from 468 to 51 ms in the isolated writer. The remaining fresh-publication cost is predominantly staging those individual files.
+
+The correctness audit reproduced a lost page after a filename changed capitalization on a case-insensitive volume. The writer now removes stale spellings before installing replacements and checks ownership when another manifest spelling reaches the same file. A failed preparation blocks commit. Rollback removes directories created by the transaction while preserving independent additions.
+
+Across 108 fixture and real-crate configurations, 2,480 ordered generated files and all warnings matched 0.5.1. The on-disk comparison covered 1,718 files across 21 CLI configurations and verified each file against its manifest. All 375 default-layout pages from the six real crates compiled and passed the internal-link checker.
+
 ## Release 0.5.1 results
 
 Publishing `syn` to an empty directory took **647 ms**, down from **789 ms**. Rebuilding 4,002 unchanged files took **380 ms**, down from **931 ms**. The following medians compare the release with `b25483b` on the same Apple M4 Pro and local APFS volume. Each command ran in a fresh Node 22.17.1 process. We interleaved builds and workloads, discarded one warm-up round, and kept five observations per cell. [Release measurements](benchmarks/release-0.5.1.json)

@@ -278,7 +278,9 @@ function rewriteProse(text: string, resolve: LinkResolver): string {
  * page's own headings. Headings that would exceed level 6 become bold text.
  */
 export function demoteHeadings(md: string, levels: number, parse = parseMarkdown): string {
-  if (!md || levels <= 0 || !/[#=-]/.test(md)) return md;
+  // ATX headings need whitespace or EOL after the marker. A setext
+  // underline ends its line. Both conditions also hold inside containers.
+  if (!md || levels <= 0 || !/#(?=[ \t\r\n]|$)|[=-][ \t]*(?:[\r\n]|$)/.test(md)) return md;
   const tree = parse(md, true);
   let changed = false;
   function demote(parent: Parents): void {
@@ -411,19 +413,41 @@ function serialize(root: Root, normalizeDoctests: boolean, resolve?: LinkResolve
   return toMarkdown(root, serializeOptions).trimEnd();
 }
 
+// A single ordinary sentence has identical source and serialized Markdown.
+// Restrict punctuation to keep GFM autolinks, MDX escapes and block syntax
+// on the full parser path. Leading/trailing and repeated spaces matter, too.
+function isPlainSentence(md: string): boolean {
+  return (
+    /^[A-Za-z][A-Za-z0-9 ,'-]*[.!?]?$/.test(md) && !/ {2}| $|^(?:import|export)(?: |$)/.test(md)
+  );
+}
+
+/** Only parse the opening paragraph when later definitions cannot affect it. */
+function summarySource(md: string): string {
+  if (!/^[A-Za-z]/.test(md)) return md;
+  const end = md.search(/\r?\n[ \t]*\r?\n/);
+  if (end < 0) return md;
+  const first = md.slice(0, end);
+  // Each line starts with prose, ruling out setext headings, table
+  // delimiters and other blocks. Brackets can refer to later definitions.
+  return first.includes("[") || /[\r\n](?!\n|[A-Za-z])/.test(first) ? md : first;
+}
+
 /** Render CommonMark/GFM as passive MDX without interpreting Rust documentation as JSX or JS. */
 export function sanitizeDocstring(
   raw: string,
   resolve?: LinkResolver,
   parse = parseMarkdown
 ): string {
-  return raw ? serialize(parse(raw, true), true, resolve) : raw;
+  return raw && !isPlainSentence(raw) ? serialize(parse(raw, true), true, resolve) : raw;
 }
 
 /** Render a single complete prose paragraph, keeping links and inline formatting intact. */
 export function summaryMarkdown(md: string | null | undefined, parse = parseMarkdown): string {
   if (!md) return "";
-  const root = parse(md, true);
+  const source = summarySource(md);
+  if (isPlainSentence(source)) return source;
+  const root = parse(source);
   const paragraph = root.children.find((n) => n.type === "paragraph");
   if (paragraph?.type !== "paragraph") return "";
   const definitions = new Map(
@@ -441,19 +465,26 @@ export function summaryMarkdown(md: string | null | undefined, parse = parseMark
         if (def) return { type: "image", url: def.url, title: def.title, alt: n.alt };
       }
       if (n.type === "break") return { type: "text", value: " " };
-      if (n.type === "text") n.value = n.value.replace(/\s*\n\s*/g, " ");
-      if ("children" in n) n.children = inline(n.children);
-      return n;
+      if (n.type === "text" && n.value.includes("\n")) {
+        const value = n.value.replace(/\s+/g, (space) => (space.includes("\n") ? " " : space));
+        return { ...n, value };
+      }
+      if ("children" in n) return { ...n, children: inline(n.children) };
+      return { ...n };
     });
   }
-  paragraph.children = inline(paragraph.children);
-  return serialize({ type: "root", children: [paragraph] }, false);
+  return serialize(
+    { type: "root", children: [{ ...paragraph, children: inline(paragraph.children) }] },
+    false
+  );
 }
 
 /** Plain text for frontmatter and string props. */
 export function summaryLine(md: string | null | undefined, parse = parseMarkdown): string {
   if (!md) return "";
-  const node = parse(md).children.find((n) => n.type === "paragraph");
+  const source = summarySource(md);
+  if (isPlainSentence(source)) return source;
+  const node = parse(source).children.find((n) => n.type === "paragraph");
   if (!node) return "";
   function plain(node: Nodes): string {
     if (!("children" in node)) return textOf(node);

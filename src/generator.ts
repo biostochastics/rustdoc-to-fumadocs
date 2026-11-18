@@ -1344,7 +1344,7 @@ export class RustdocGenerator {
     sectionScope?: string
   ): void {
     let docs = this.docsFor(item, demote, strip);
-    if (docs && sectionScope) {
+    if (sectionScope && /#[ \t]/.test(docs)) {
       const used = new Map<string, number>();
       docs = mapProse(
         docs,
