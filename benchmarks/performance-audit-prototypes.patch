@@ -1,0 +1,146 @@
+diff --git a/src/generator.ts b/src/generator.ts
+--- a/src/generator.ts
++++ b/src/generator.ts
+@@ -1577,7 +1577,7 @@
+     const frontmatter = this.options.frontmatter(node.item, this.logicalPath(node));
+     if (this.options.frontmatter === defaultFrontmatter) {
+       frontmatter.title = node.name;
+-      if (node.via?.docs) frontmatter.description = summaryLine(node.via.docs);
++      if (node.via?.docs) frontmatter.description = plainSummaryFor(node.via);
+     }
+     const sections: string[] = [];
+ 
+@@ -1769,7 +1769,7 @@
+       page.name,
+     ]);
+     if (page.via?.docs && this.options.frontmatter === defaultFrontmatter)
+-      frontmatter.description = summaryLine(page.via.docs);
++      frontmatter.description = plainSummaryFor(page.via);
+     const sections: string[] = [];
+ 
+     sections.push(this.formatFrontmatter(frontmatter));
+@@ -1995,7 +1995,7 @@
+       cards.push({
+         title: refItem.name,
+         href,
+-        description: summaryLine(refItem.docs) || `A ${refKind}`,
++        description: plainSummaryFor(refItem) || `A ${refKind}`,
+       });
+     }
+ 
+@@ -3071,6 +3071,17 @@
+ 
+ // Default options
+ 
++const plainSummaries = new WeakMap<Item, { source: string; value: string }>();
++
++function plainSummaryFor(item: Item): string {
++  if (!item.docs) return "";
++  const cached = plainSummaries.get(item);
++  if (cached?.source === item.docs) return cached.value;
++  const value = summaryLine(item.docs);
++  plainSummaries.set(item, { source: item.docs, value });
++  return value;
++}
++
+ /**
+  * Default frontmatter generator for FumaDocs v14+.
+  * Generates title, description, and icon based on item kind.
+@@ -3081,8 +3092,7 @@
+   const icon = kind === "unknown" ? "FileText" : kindToIcon(kind);
+   return {
+     title: path[path.length - 1] ?? item.name ?? "API",
+-    description:
+-      summaryLine(item.docs) || `Documentation for ${path[path.length - 1] ?? item.name}`,
++    description: plainSummaryFor(item) || `Documentation for ${path[path.length - 1] ?? item.name}`,
+     icon,
+   };
+ }
+diff --git a/src/docs.ts b/src/docs.ts
+--- a/src/docs.ts
++++ b/src/docs.ts
+@@ -24,7 +24,19 @@
+ import type { Nodes, Parents, PhrasingContent, Root } from "mdast";
+ 
+ const parseOptions = { extensions: [gfm()], mdastExtensions: [gfmFromMarkdown()] };
+-const parse = (source: string): Root => fromMarkdown(source, parseOptions);
++const parsedTrees = new Map<string, Root>();
++
++function parse(source: string, mutable = false): Root {
++  let tree = parsedTrees.get(source);
++  if (tree) parsedTrees.delete(source);
++  else tree = fromMarkdown(source, parseOptions);
++  parsedTrees.set(source, tree);
++  if (parsedTrees.size > 64) {
++    const oldest = parsedTrees.keys().next();
++    if (!oldest.done) parsedTrees.delete(oldest.value);
++  }
++  return mutable ? structuredClone(tree) : tree;
++}
+ 
+ /** A function that resolves a link destination (or shortcut label). */
+ export type LinkResolver = (key: string) => LinkResolution;
+@@ -251,7 +263,7 @@
+  */
+ export function demoteHeadings(md: string, levels: number): string {
+   if (!md || levels <= 0 || !/[#=-]/.test(md)) return md;
+-  const tree = parse(md);
++  const tree = parse(md, true);
+   let changed = false;
+   function demote(parent: Parents): void {
+     for (const [i, n] of parent.children.entries()) {
+@@ -384,13 +396,13 @@
+ 
+ /** Render CommonMark/GFM as passive MDX without interpreting Rust documentation as JSX or JS. */
+ export function sanitizeDocstring(raw: string, resolve?: LinkResolver): string {
+-  return raw ? serialize(parse(raw), true, resolve) : raw;
++  return raw ? serialize(parse(raw, true), true, resolve) : raw;
+ }
+ 
+ /** Render a single complete prose paragraph, keeping links and inline formatting intact. */
+ export function summaryMarkdown(md: string | null | undefined): string {
+   if (!md) return "";
+-  const root = parse(md);
++  const root = parse(md, true);
+   const paragraph = root.children.find((n) => n.type === "paragraph");
+   if (paragraph?.type !== "paragraph") return "";
+   const definitions = new Map(
+diff --git a/src/output.ts b/src/output.ts
+--- a/src/output.ts
++++ b/src/output.ts
+@@ -145,11 +145,30 @@
+           .flatMap(([, files]) => Object.keys(files))
+       );
+       const changes = new Map<string, boolean>();
+-      for (const [path, hash] of this.pages) {
+-        const dest = await this.destination(path);
+-        if (old[path] === hash && (await existing(dest)) && digest(await readFile(dest)) === hash)
+-          continue;
+-        changes.set(path, true);
++      const entries = this.pages.entries();
++      for (let start = 0; start < this.pages.size; start += 16) {
++        const batch: [string, string][] = [];
++        while (batch.length < 16) {
++          const entry = entries.next();
++          if (entry.done) break;
++          batch.push(entry.value);
++        }
++        const results = await Promise.allSettled(
++          batch.map(async ([path, hash]) => {
++            const dest = await this.destination(path, false);
++            if (
++              old[path] === hash &&
++              (await existing(dest)) &&
++              digest(await readFile(dest)) === hash
++            )
++              return null;
++            return path;
++          })
++        );
++        for (const result of results) {
++          if (result.status === "rejected") throw result.reason;
++          if (result.value !== null) changes.set(result.value, true);
++        }
+       }
+       for (const [path, hash] of Object.entries(old)) {
+         if (!prune || this.pages.has(path) || otherPaths.has(path)) continue;
