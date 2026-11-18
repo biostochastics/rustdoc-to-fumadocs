@@ -255,6 +255,43 @@ describe.each(FORMATS)("layout and visibility regressions (%s)", (format) => {
   });
 });
 
+it("keeps literal suffixes occupied when case variants share filenames and anchors", () => {
+  const crate = loadCrate("minimal.json");
+  const root = crate.index[crate.root];
+  const template = itemNamed(crate, "test_function");
+  const names = ["Alpha", "alpha-fn", "ALPHA", "alpha-fn-3", "aLpHa", "alpha-2", "alPHA"];
+  if (!("module" in root.inner)) throw new Error("Expected fixture root module");
+  root.inner.module.items = names.map((name, i) => {
+    const id = i + 1;
+    crate.index[id] = { ...template, id, name };
+    crate.paths[id] = { crate_id: 0, kind: "function", path: ["test_crate", name] };
+    return id;
+  });
+  const routes = (groupBy: "module" | "kind") => {
+    const index = new RustdocGenerator(crate, { ...options, groupBy }).pageIndex();
+    return names.map((name) =>
+      index
+        .get("test_crate::" + name)
+        ?.split("/")
+        .at(-1)
+    );
+  };
+  expect(routes("module")).toEqual([
+    "Alpha",
+    "alpha-fn",
+    "ALPHA-fn-2",
+    "alpha-fn-3",
+    "aLpHa-fn-4",
+    "alpha-2",
+    "alPHA-fn-5",
+  ]);
+  expect(routes("kind")).toEqual(
+    ["alpha", "alpha-fn", "alpha-2", "alpha-fn-3", "alpha-3", "alpha-2-2", "alpha-4"].map(
+      (anchor) => "functions#" + anchor
+    )
+  );
+});
+
 it("displays unstable const use independently of ordinary function stability", () => {
   const crate = loadCrate("layout_cases.v60.json");
   const item = itemNamed(crate, "root_fn");

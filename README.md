@@ -11,7 +11,7 @@ Use Node.js 20.19+ on the 20.x line, or 22.12+. Rust is needed to **produce** th
 ```sh
 npm ci
 npm pack
-npm install --global ./rustdoc-to-fumadocs-0.5.0.tgz
+npm install --global ./rustdoc-to-fumadocs-0.5.1.tgz
 rustdoc-to-fumadocs --version
 ```
 
@@ -117,7 +117,7 @@ rustdoc-to-fumadocs --workspace --output content/docs/api
 
 ### Regeneration
 
-The CLI stages generated files, checks their destinations, and records their hashes in `.rustdoc-to-fumadocs.manifest` in the output directory. Keep that manifest with the generated tree. A complete run removes obsolete pages it previously generated when their contents still match the manifest. Edited obsolete pages and unrelated guides are preserved. Partial workspace runs defer cleanup until a complete run. Files created before 0.5.0 have no ownership record. Start in a fresh output directory when migrating a generated-only tree.
+The CLI reports how many files it wrote, kept unchanged, and removed. It checks live destinations before publication and records generated file hashes in `.rustdoc-to-fumadocs.manifest` in the output directory. Keep that manifest with the generated tree. A complete run removes obsolete pages it previously generated when their contents still match the manifest. Edited obsolete pages and unrelated guides are preserved. Partial workspace runs defer cleanup until a complete run. Files created before 0.5.0 have no ownership record. Start in a fresh output directory when migrating a generated-only tree.
 
 Use the CLI for managed disk writes. Normal write errors roll back changes during publication. A lock serializes publication to an output directory. If the process was forcibly terminated, inspect the output and any stage directory before removing an abandoned lock and retrying.
 

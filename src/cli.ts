@@ -13,31 +13,19 @@ import { basename, resolve, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
 import { createRequire } from "node:module";
-import { parse as parseToml } from "smol-toml";
 import { OutputTransaction } from "./output.js";
 export { validateOutputPath } from "./output.js";
-import {
-  RustdocGenerator,
-  sanitizePath,
-  type GeneratedFile,
-  type GeneratorOptions,
-} from "./generator.js";
-import { validateRustdocJson, parseJsonSafe } from "./validation.js";
+import type { GeneratedFile, GeneratorOptions, RustdocGenerator } from "./generator.js";
 import { RustdocError, ErrorCode, isRustdocError, inputReadError } from "./errors.js";
-import {
-  cargoWorkspace,
-  loadWorkspace,
-  findMemberRustdocJson,
-  renderWorkspaceMeta,
-  renderWorkspaceIndex,
-  type WorkspaceMember,
-} from "./workspace.js";
+import type { WorkspaceMember } from "./workspace.js";
 
 /**
  * Maximum input file size in bytes (100MB).
  * Prevents memory exhaustion from extremely large rustdoc JSON files.
  */
 const MAX_INPUT_SIZE_BYTES = 100 * 1024 * 1024;
+// Limit the combined source size of workspace members kept between passes.
+const WORKSPACE_CACHE_INPUT_BYTES = 4 * 1024 * 1024;
 
 export interface CliArgs {
   input?: string;
@@ -147,7 +135,7 @@ export function parseArgs(argv: string[]): CliArgs {
 
   const requireValue = (flag: string, next: string | undefined, label: string): string => {
     if (next === undefined || next.startsWith("-")) {
-      throw new ArgParseError(`Error: ${flag} requires ${label}`);
+      throw new ArgParseError(`${flag} requires ${label}`);
     }
     return next;
   };
@@ -188,7 +176,7 @@ export function parseArgs(argv: string[]): CliArgs {
         const mode = requireValue(arg, argv[++i], "a mode argument (module, kind, or flat)");
         if (mode !== "module" && mode !== "kind" && mode !== "flat") {
           throw new ArgParseError(
-            `Error: Invalid --group-by value "${mode}". Must be: module, kind, or flat`
+            `Invalid --group-by value "${mode}". Must be: module, kind, or flat`
           );
         }
         result.groupBy = mode;
@@ -256,76 +244,49 @@ export function parseArgs(argv: string[]): CliArgs {
 }
 
 function helpText(): string {
-  return `
-rustdoc-to-fumadocs - Convert rustdoc JSON to Fumadocs MDX
+  return `rustdoc-to-fumadocs — Generate a Fumadocs API reference from rustdoc JSON
 
 USAGE:
-  rustdoc-to-fumadocs [OPTIONS] [INPUT]
+  rustdoc-to-fumadocs target/doc/my_crate.json [options]
+  rustdoc-to-fumadocs --crate my_crate [options]
+  rustdoc-to-fumadocs --workspace [directory] [options]
 
-OPTIONS:
-  -i, --input <path>      Path to rustdoc JSON file
-  -c, --crate <name>      Crate name (will look in target/doc/<name>.json)
-  -w, --workspace [dir]   Treat <dir> (or cwd) as a Cargo workspace root and
-                          generate docs for selected Cargo workspace members.
-                          Overrides --input/--crate.
-  --target-dir <dir>      Cargo target directory containing doc/<crate>.json
-                          (default: $CARGO_TARGET_DIR or Cargo's configured target)
-  --exclude <crates>      Workspace members to skip (comma-separated or
-                          repeated; package or crate names)
-  --include-unpublished   Also document workspace members with
-                          publish = false (skipped by default)
-  -o, --output <dir>      Output directory (default: content/docs/api)
-  -b, --base-url <url>    Base URL for generated docs (default: /docs/api)
-  --source-url-base <url> Repository URL for "Source" links and for
-                          repository-relative links in docstrings, e.g.
-                          https://github.com/org/repo
-  --source-ref <ref>      Git ref for source links (adds /blob/<ref>/)
-  -g, --group-by <mode>   Group items by: module, kind, or flat (default: module)
-  --no-index              Don't generate index pages for modules
-  --no-tabs               Don't use Tabs component for implementations
-  --no-cards              Don't use Cards component for cross-references
-  -n, --dry-run           Show what would be generated without writing files
-  --json                  Preview the file manifest as JSON without writing files
-  -V, --version           Print the installed package version
-  -v, --verbose           Show verbose output
-  -h, --help              Show this help message
+Get started
+  Preview the pages   rustdoc-to-fumadocs target/doc/my_crate.json --dry-run
+  Write the pages     rustdoc-to-fumadocs target/doc/my_crate.json -o content/docs/api
 
-EXAMPLES:
-  # From local rustdoc JSON
-  rustdoc-to-fumadocs --input target/doc/my_crate.json --output docs/api
+Input
+  -i, --input <path>       Use a rustdoc JSON file (also accepted as a positional path)
+  -c, --crate <name>       Find a crate's JSON in the Cargo target directory
+  -w, --workspace [dir]    Convert the directory's workspace (default: current directory)
+                           Takes precedence over --input and --crate
+  --target-dir <dir>       Use <dir>/doc for crate or workspace inputs
+  --exclude <crates>       Skip members by name (repeat or use a comma-separated list)
+  --include-unpublished    Include workspace members with publish = false
 
-  # Auto-detect from crate name
-  rustdoc-to-fumadocs --crate my_crate --output docs/api
+Output
+  -o, --output <dir>       Write pages here (default: content/docs/api)
+  -b, --base-url <url>     URL prefix for generated links (default: /docs/api)
+  -g, --group-by <mode>    Organize by module, kind, or flat (default: module)
+  --source-url-base <url>  Repository URL for source links
+  --source-ref <ref>       Git branch, tag, or commit for source links
+  --no-index               Omit module index pages
+  --no-tabs                Render implementations without tabs
+  --no-cards               Omit related-item cards
 
-  # Whole Cargo workspace (one output subdir per member crate)
-  cargo doc --workspace --no-deps  # with the JSON RUSTDOCFLAGS
-  rustdoc-to-fumadocs --workspace --output docs/api
+Preview and reporting
+  -n, --dry-run            Preview paths and sizes without writing
+  --json                   Print the preview as JSON without writing
+  -v, --verbose            List each file and its size during a conversion
+  -V, --version            Print the installed version
+  -h, --help               Show this help
 
-  # Dry run to preview output
-  rustdoc-to-fumadocs --crate my_crate --dry-run
-
-  # JSON output for CI/scripts
-  rustdoc-to-fumadocs --crate my_crate --json
-
-  # Generate rustdoc JSON first, then convert
+Generate the input from a Rust crate
   RUSTDOCFLAGS="-Z unstable-options --output-format json" cargo +nightly doc --no-deps
-  rustdoc-to-fumadocs --input target/doc/my_crate.json
+  Add --workspace to the Cargo command to build inputs for all members.
+  With stable Rust, set RUSTC_BOOTSTRAP=1 in place of selecting +nightly.
 
-GENERATING RUSTDOC JSON:
-  Rustdoc JSON requires nightly Rust or the RUSTC_BOOTSTRAP=1 env var:
-
-  # Using nightly:
-  RUSTDOCFLAGS="-Z unstable-options --output-format json" cargo +nightly doc --no-deps
-
-  # Using stable with bootstrap:
-  RUSTC_BOOTSTRAP=1 RUSTDOCFLAGS="-Z unstable-options --output-format json" cargo doc --no-deps
-
-  The JSON file will be in target/doc/<crate_name>.json (or under
-  $CARGO_TARGET_DIR / --target-dir when set)
-
-SUPPORTED FORMATS:
-  This tool supports rustdoc JSON format versions 27-61 (Rust 1.76 through 1.100 and the 2026-11-17 nightly).
-  Newer versions may work but could have unsupported features.
+Supported rustdoc JSON formats: 27–61. Newer formats produce a warning.
 `;
 }
 
@@ -372,23 +333,18 @@ export function formatError(error: unknown): string {
   return `Error: ${String(error)}`;
 }
 
-async function loadInput(path: string) {
-  let content: string;
+async function readInput(path: string): Promise<Buffer> {
   try {
     if ((await stat(path)).size > MAX_INPUT_SIZE_BYTES)
       throw new RustdocError(
         ErrorCode.INPUT_READ_FAILED,
         `Input file too large: ${path} (max: 100MB)`
       );
-    content = await readFile(path, "utf8");
+    return await readFile(path);
   } catch (err) {
     if (isRustdocError(err)) throw err;
     throw inputReadError(path, err as Error);
   }
-  return {
-    ...validateRustdocJson(parseJsonSafe(content, path)),
-    digest: createHash("sha256").update(content).digest("hex"),
-  };
 }
 
 async function singleInput(args: CliArgs): Promise<{ path: string; packageName?: string }> {
@@ -403,6 +359,7 @@ async function singleInput(args: CliArgs): Promise<{ path: string; packageName?:
   let pkgName: string | undefined;
   let targetName: string | undefined;
   let discovered: string | undefined;
+  const { cargoWorkspace, findMemberRustdocJson } = await import("./workspace.js");
   if (await pathExists("Cargo.toml")) {
     const manifestPath = resolve("Cargo.toml");
     const workspace = await cargoWorkspace(manifestPath);
@@ -416,6 +373,7 @@ async function singleInput(args: CliArgs): Promise<{ path: string; packageName?:
     } else if (!workspace) {
       // A prebuilt target can still be selected when the local manifest is unusable.
       try {
+        const { parse: parseToml } = await import("smol-toml");
         const manifest = parseToml(await readFile(manifestPath, "utf8")) as {
           package?: { name?: string };
           lib?: { name?: string };
@@ -431,10 +389,9 @@ async function singleInput(args: CliArgs): Promise<{ path: string; packageName?:
     name ??= pkgName;
   }
   if (!name)
-    throw new RustdocError(
-      ErrorCode.INPUT_READ_FAILED,
-      "No input specified. Use --input or --crate."
-    );
+    throw new RustdocError(ErrorCode.INPUT_READ_FAILED, "No input specified.", {
+      hint: "Try rustdoc-to-fumadocs target/doc/my_crate.json --dry-run, or use --workspace in a Cargo workspace.",
+    });
   const dir = resolveTargetDir(args.targetDir, ".", discovered);
   const candidate = targetName ?? name;
   const path = await findMemberRustdocJson(candidate, dir);
@@ -454,6 +411,10 @@ interface MemberIssue {
 
 /** Report projected bytes from the same files staged for writing. */
 async function generate(args: CliArgs, streams: CliStreams): Promise<number> {
+  const [{ RustdocGenerator, sanitizePath }, { validateRustdocJson, parseJsonSafe }] =
+    await Promise.all([import("./generator.js"), import("./validation.js")]);
+  const validate = (content: Buffer, path: string) =>
+    validateRustdocJson(parseJsonSafe(content.toString("utf8"), path));
   const warnings = new Set<string>();
   const warn = (msg: string): void => {
     if (warnings.has(msg)) return;
@@ -477,6 +438,7 @@ async function generate(args: CliArgs, streams: CliStreams): Promise<number> {
     onWarning: (msg) => warn(name ? name + ": " + msg : msg),
   });
   const files: { path: string; size: number }[] = [];
+  const stats = { totalFiles: 0, totalBytes: 0, mdxFiles: 0, metaFiles: 0 };
   let transaction: OutputTransaction | undefined;
   const preview = args.dryRun || args.json;
   const accept = async (batch: GeneratedFile[]): Promise<void> => {
@@ -484,13 +446,22 @@ async function generate(args: CliArgs, streams: CliStreams): Promise<number> {
       transaction ??= await OutputTransaction.open(output);
       await transaction.add(batch);
     }
-    for (const f of batch) files.push({ path: f.path, size: Buffer.byteLength(f.content) });
+    for (const f of batch) {
+      const size = Buffer.byteLength(f.content);
+      stats.totalFiles++;
+      stats.totalBytes += size;
+      if (f.path.endsWith(".mdx")) stats.mdxFiles++;
+      if (f.path.endsWith(".json")) stats.metaFiles++;
+      if (preview || args.verbose) files.push({ path: f.path, size });
+    }
   };
   let owner = "workspace";
   let crateInfo: JsonOutput["crate"];
   let workspaceInfo: { generated: string[]; skipped: MemberIssue[] } | undefined;
   try {
     if (args.workspace !== undefined) {
+      const { loadWorkspace, findMemberRustdocJson, renderWorkspaceMeta, renderWorkspaceIndex } =
+        await import("./workspace.js");
       const ws = await loadWorkspace(resolve(args.workspace, "Cargo.toml"));
       const excluded = new Set(args.exclude.map((n) => n.replace(/-/g, "_")));
       const members = ws.members.filter(
@@ -507,7 +478,9 @@ async function generate(args: CliArgs, streams: CliStreams): Promise<number> {
         hash: string;
         root: string;
         landingUrl: string | null;
+        generator?: RustdocGenerator;
       }[] = [];
+      let remainingCacheBytes = WORKSPACE_CACHE_INPUT_BYTES;
       const pages = new Map<string, string>();
       const roots = new Set<string>();
       for (const member of members) {
@@ -520,8 +493,10 @@ async function generate(args: CliArgs, streams: CliStreams): Promise<number> {
           continue;
         }
         let input;
+        let content;
         try {
-          input = await loadInput(path);
+          content = await readInput(path);
+          input = validate(content, path);
         } catch (err) {
           skipped.push({ name: member.name, reason: formatError(err) });
           continue;
@@ -536,10 +511,13 @@ async function generate(args: CliArgs, streams: CliStreams): Promise<number> {
           );
         roots.add(root.toLowerCase());
         for (const [key, url] of generator.pageIndex()) if (!pages.has(key)) pages.set(key, url);
+        const retain = content.length <= remainingCacheBytes;
+        if (retain) remainingCacheBytes -= content.length;
         prepared.push({
           member,
           path,
-          hash: input.digest,
+          hash: createHash("sha256").update(content).digest("hex"),
+          generator: retain ? generator : undefined,
           root,
           landingUrl: generator.landingUrl(),
         });
@@ -555,17 +533,21 @@ async function generate(args: CliArgs, streams: CliStreams): Promise<number> {
           }
         );
       const nav: WorkspaceMember[] = [];
+      log(
+        `Rendering ${prepared.length} workspace member${prepared.length === 1 ? "" : "s"} from ${ws.rootDir}`
+      );
       for (const p of prepared) {
-        const input = await loadInput(p.path);
-        if (input.digest !== p.hash)
+        const content = await readInput(p.path);
+        if (createHash("sha256").update(content).digest("hex") !== p.hash)
           throw new RustdocError(
             ErrorCode.INPUT_READ_FAILED,
             `Rustdoc input changed during generation: ${p.path}. Retry the conversion.`
           );
-        const gen = new RustdocGenerator(input.crate, {
-          ...options(p.member.name),
-          externalPages: pages,
-        });
+        const gen =
+          p.generator ??
+          new RustdocGenerator(validate(content, p.path).crate, options(p.member.name));
+        p.generator = undefined;
+        gen.setExternalPages(pages);
         await accept(gen.generate());
         nav.push({ ...p.member, name: p.root, landingUrl: p.landingUrl });
       }
@@ -579,7 +561,7 @@ async function generate(args: CliArgs, streams: CliStreams): Promise<number> {
       workspaceInfo = { generated: prepared.map((p) => p.member.name), skipped };
     } else {
       const { path, packageName } = await singleInput(args);
-      const input = await loadInput(path);
+      const input = validate(await readInput(path), path);
       for (const w of input.warnings) warn(w);
       const name = input.crate.index[input.crate.root]?.name ?? "crate";
       owner = "crate:" + sanitizePath(name);
@@ -591,13 +573,7 @@ async function generate(args: CliArgs, streams: CliStreams): Promise<number> {
       log(`Loaded crate: ${name} (format version ${input.crate.format_version})`);
       await accept(new RustdocGenerator(input.crate, options(packageName)).generate());
     }
-    if (transaction) await transaction.commit(owner, !workspaceInfo?.skipped.length);
-    const stats = {
-      totalFiles: files.length,
-      totalBytes: files.reduce((n, f) => n + f.size, 0),
-      mdxFiles: files.filter((f) => f.path.endsWith(".mdx")).length,
-      metaFiles: files.filter((f) => f.path.endsWith(".json")).length,
-    };
+    const published = await transaction?.commit(owner, !workspaceInfo?.skipped.length);
     if (args.json) {
       streams.stdout(
         JSON.stringify(
@@ -615,12 +591,21 @@ async function generate(args: CliArgs, streams: CliStreams): Promise<number> {
         ) + "\n"
       );
     } else {
-      if (args.dryRun) log("--- DRY RUN ---");
+      if (args.dryRun) log("DRY RUN — preview only");
       log(
-        `${preview ? "Would generate" : "Generated"} ${files.length} files to: ${output} (${stats.totalBytes} bytes)`
+        `${preview ? "Would generate" : "Generated"} ${stats.totalFiles} files in ${output} (${stats.totalBytes} bytes)`
       );
+      if (published)
+        log(
+          `${published.written} written, ${published.unchanged} unchanged, ${published.removed} removed.`
+        );
+      if (workspaceInfo?.skipped.length) {
+        const count = workspaceInfo.skipped.length;
+        log(
+          `Partial workspace output. Skipped ${count} member${count === 1 ? "" : "s"}. See the warnings above.`
+        );
+      }
       if (args.verbose || args.dryRun) for (const f of files) log(`  ${f.path} (${f.size} bytes)`);
-      if (args.dryRun) log("--- END DRY RUN ---");
     }
     return 0;
   } finally {
@@ -652,12 +637,21 @@ function emitError(err: unknown, args: Pick<CliArgs, "json">, streams: CliStream
       success: false,
       error: isRustdocError(err)
         ? { code: err.code, message: err.message, hint: err.hint, context: err.context }
-        : { code: "UNKNOWN", message: err instanceof Error ? err.message : String(err) },
+        : {
+            code: "UNKNOWN",
+            message: err instanceof Error ? err.message : String(err),
+            hint:
+              err instanceof ArgParseError
+                ? "Run rustdoc-to-fumadocs --help for usage and examples."
+                : undefined,
+          },
     };
     streams.stdout(JSON.stringify(output, null, 2) + "\n");
     return 1;
   }
   streams.stderr(formatError(err) + "\n");
+  if (err instanceof ArgParseError)
+    streams.stderr("Run rustdoc-to-fumadocs --help for usage and examples.\n");
   return 1;
 }
 

@@ -35,6 +35,8 @@ import { getItemKind, isPlainStruct, isTupleStruct, getPathName } from "./types.
 import { ensureRustdocCrate } from "./validation.js";
 import { RustdocError, ErrorCode } from "./errors.js";
 import {
+  createMarkdownParser,
+  type MarkdownParser,
   rewriteDocLinks,
   demoteHeadings,
   mapProse,
@@ -125,6 +127,8 @@ interface PageEntry {
   url: string;
   /** Explicit item heading id on a shared kind page. */
   anchor?: string;
+  /** Allocated on the first doc link that tests a member heading at this placement. */
+  memberHeadings?: Set<string>;
   /** cfg predicates the item is gated on, module gates included. */
   gates: Cfg[];
 }
@@ -163,7 +167,7 @@ interface ModuleNode {
   /** Lower-cased names claimed in this directory. */
   taken: Set<string>;
   /** Group-page heading ids already claimed. */
-  anchors: Set<string>;
+  anchors: Map<string, number>;
   /** Glob paths can converge on the same use at the same destination. */
   expandedUses: Set<Id>;
 }
@@ -545,7 +549,7 @@ export interface GeneratorOptions {
 }
 
 /** Options that stay optional after defaults have been applied. */
-type OptionalKeys = "externalPages" | "sourceUrlBase" | "sourceRef" | "packageName";
+type OptionalKeys = "externalPages" | "sourceUrlBase" | "sourceRef" | "packageName" | "frontmatter";
 
 /** Options after defaults have been applied. */
 type ResolvedOptions = Required<Omit<GeneratorOptions, OptionalKeys>> &
@@ -581,6 +585,9 @@ export class RustdocGenerator {
   private externalTypePaths?: Map<string, ItemSummary>;
   private membersIndexed = false;
   private flatNames = new Set(["index", "meta"]);
+  private filenameSuffixes = new WeakMap<Set<string>, Map<string, number>>();
+  private parseMarkdown?: MarkdownParser;
+  private plainSummaries = new WeakMap<Item, { source: string; value: string }>();
   private resolvedDocs = new Map<Id, string>();
   private summaries = new Map<Id, string>();
   private calloutDocs = new Map<Id, { rest: string; sections: Map<string, string> }>();
@@ -595,7 +602,6 @@ export class RustdocGenerator {
       ...options,
       onWarning: options.onWarning ?? ((message: string) => console.warn(message)),
       generateIndex: options.generateIndex ?? true,
-      frontmatter: options.frontmatter ?? defaultFrontmatter,
       filter: options.filter ?? defaultFilter,
       groupBy: options.groupBy ?? "module",
       useTabs: options.useTabs ?? true,
@@ -679,7 +685,13 @@ export class RustdocGenerator {
       this.membersIndexed = true;
     }
     const files: GeneratedFile[] = [];
-    this.renderNode(plan, files);
+    const previousParser = this.parseMarkdown;
+    this.parseMarkdown = createMarkdownParser();
+    try {
+      this.renderNode(plan, files);
+    } finally {
+      this.parseMarkdown = previousParser;
+    }
     if (this.missingRefCount > RustdocGenerator.MAX_VERBOSE_MISSING_REFS) {
       this.options.onWarning(
         `Total missing item references: ${this.missingRefCount} (only first ${RustdocGenerator.MAX_VERBOSE_MISSING_REFS} shown)`
@@ -920,7 +932,7 @@ export class RustdocGenerator {
         "meta",
         ...(this.options.groupBy === "kind" ? KIND_ORDER.map(kindToFilename) : []),
       ]),
-      anchors: new Set(),
+      anchors: new Map(),
       expandedUses: new Set(),
     };
   }
@@ -1012,9 +1024,7 @@ export class RustdocGenerator {
     let anchor: string | undefined;
     if (this.options.groupBy === "kind") {
       const slug = headingSlug(name) || "item";
-      anchor = slug;
-      for (let n = 2; node.anchors.has(group + "#" + anchor); n++) anchor = slug + "-" + n;
-      node.anchors.add(group + "#" + anchor);
+      anchor = claimAnchor(node.anchors, group + "#" + slug, 2).slice(group.length + 1);
     }
     const url =
       joinUrl(
@@ -1052,11 +1062,23 @@ export class RustdocGenerator {
     const base = prefix + sanitizePath(name);
     const taken = flat ? this.flatNames : node.taken;
     const limit = MAX_FILENAME_LENGTH - (kind !== "module" || flat ? 4 : 0);
-    let suffix = "";
     let candidate = truncateUtf8(base, limit);
-    for (let n = 1; taken.has(candidate.toLowerCase()); n++) {
-      suffix = "-" + kindSuffix(kind) + (n > 1 ? "-" + n : "");
-      candidate = truncateUtf8(base, limit - suffix.length) + suffix;
+    if (taken.has(candidate.toLowerCase())) {
+      let cursors = this.filenameSuffixes.get(taken);
+      if (!cursors) {
+        cursors = new Map<string, number>();
+        this.filenameSuffixes.set(taken, cursors);
+      }
+      // ASCII case variants truncate at identical byte offsets. For Unicode only
+      // share a cursor for the exact base, since folding can change byte length.
+      const key = kind + "/" + (/^[\x20-\x7e]+$/.test(base) ? base.toLowerCase() : base);
+      let n = cursors.get(key) ?? 1;
+      do {
+        const suffix = "-" + kindSuffix(kind) + (n > 1 ? "-" + n : "");
+        candidate = truncateUtf8(base, limit - suffix.length) + suffix;
+        n++;
+      } while (taken.has(candidate.toLowerCase()));
+      cursors.set(key, n);
     }
     taken.add(candidate.toLowerCase());
     return candidate;
@@ -1229,7 +1251,8 @@ export class RustdocGenerator {
       // A trait implementation can inherit a method without documenting a
       // heading; in that case the implementing type is the nearest destination.
       const desired = prefix + member.replace(/^(variant\.[^.]+)\.field\..+$/, "$1");
-      if (![...this.anchorsFor(page).values()].includes(desired)) return page.url;
+      page.memberHeadings ??= new Set(this.anchorsFor(page).values());
+      if (!page.memberHeadings.has(desired)) return page.url;
       anchor = desired;
     } else {
       anchor = prefix + (page.anchor ? "section." : "") + fragment;
@@ -1262,11 +1285,15 @@ export class RustdocGenerator {
         const target = this.owners.get(String(id));
         return target ? this.fragmentUrl(target, fragment) : dest.split("#")[0] + "#" + fragment;
       };
-      body = sanitizeDocstring(rewriteDocLinks(item.docs, resolve, false), resolve);
+      body = sanitizeDocstring(
+        rewriteDocLinks(item.docs, resolve, false, this.parseMarkdown),
+        resolve,
+        this.parseMarkdown
+      );
       this.resolvedDocs.set(item.id, body);
     }
     if (strip.length) body = this.calloutsFor(item).rest;
-    const out = demoteHeadings(body, demote);
+    const out = demoteHeadings(body, demote, this.parseMarkdown);
     this.docsCache.set(cacheKey, out);
     return out;
   }
@@ -1274,7 +1301,7 @@ export class RustdocGenerator {
   private summary(item: Item): string {
     let summary = this.summaries.get(item.id);
     if (summary === undefined) {
-      summary = summaryMarkdown(this.docsFor(item, 0));
+      summary = summaryMarkdown(this.docsFor(item, 0), this.parseMarkdown);
       this.summaries.set(item.id, summary);
     }
     return summary;
@@ -1299,7 +1326,7 @@ export class RustdocGenerator {
     let rest = this.docsFor(item, 0);
     const sections = new Map<string, string>();
     for (const name of this.calloutSections(item)) {
-      const extracted = takeSection(rest, name);
+      const extracted = takeSection(rest, name, this.parseMarkdown);
       if (extracted.section) sections.set(name, extracted.section);
       rest = extracted.rest;
     }
@@ -1318,15 +1345,16 @@ export class RustdocGenerator {
   ): void {
     let docs = this.docsFor(item, demote, strip);
     if (docs && sectionScope) {
-      const used = new Set<string>();
-      docs = mapProse(docs, (chunk) =>
-        chunk.replace(/^(#{1,6})[ \t]+([^\n]+)$/gm, (line, _level, text: string) => {
-          const slug = headingSlug(text.replace(/`/g, "")) || "section";
-          let id = slug;
-          for (let n = 1; used.has(id); n++) id = slug + "-" + n;
-          used.add(id);
-          return line + " [#" + sectionScope + ".section." + id + "]";
-        })
+      const used = new Map<string, number>();
+      docs = mapProse(
+        docs,
+        (chunk) =>
+          chunk.replace(/^(#{1,6})[ \t]+([^\n]+)$/gm, (line, _level, text: string) => {
+            const slug = headingSlug(text.replace(/`/g, "")) || "section";
+            const id = claimAnchor(used, slug, 1);
+            return line + " [#" + sectionScope + ".section." + id + "]";
+          }),
+        this.parseMarkdown
       );
     }
     if (docs) {
@@ -1383,7 +1411,9 @@ export class RustdocGenerator {
   /** A deprecation callout (escaped title, MDX-safe note), or "". */
   private renderDeprecationOf(item: Item): string {
     if (!item.deprecation) return "";
-    const note = item.deprecation.note ? sanitizeDocstring(item.deprecation.note) : undefined;
+    const note = item.deprecation.note
+      ? sanitizeDocstring(item.deprecation.note, undefined, this.parseMarkdown)
+      : undefined;
     return renderDeprecation(item.deprecation.since ?? undefined, note);
   }
 
@@ -1416,14 +1446,11 @@ export class RustdocGenerator {
     const cached = this.anchorCache.get(key);
     if (cached) return cached;
     const anchors = new Map<string, string>();
-    const used = new Set<string>();
+    const used = new Map<string, number>();
     const claim = (id: Id, base: string): void => {
       if (anchors.has(String(id))) return;
       base = page.anchor ? page.anchor + "." + base : base;
-      let anchor = base;
-      for (let n = 2; used.has(anchor); n++) anchor = `${base}-${n}`;
-      used.add(anchor);
-      anchors.set(String(id), anchor);
+      anchors.set(String(id), claimAnchor(used, base, 2));
     };
     const member = (child: Item): void => {
       if (!child.name) return;
@@ -1583,11 +1610,7 @@ export class RustdocGenerator {
    * links are absolute (`baseUrl` + canonical page path).
    */
   private generateModuleIndex(node: ModuleNode): string {
-    const frontmatter = this.options.frontmatter(node.item, this.logicalPath(node));
-    if (this.options.frontmatter === defaultFrontmatter) {
-      frontmatter.title = node.name;
-      if (node.via?.docs) frontmatter.description = summaryLine(node.via.docs);
-    }
+    const frontmatter = this.frontmatter(node.item, this.logicalPath(node), node.via);
     const sections: string[] = [];
 
     sections.push(this.formatFrontmatter(frontmatter));
@@ -1773,12 +1796,11 @@ export class RustdocGenerator {
    * implementations and a "See Also" card section.
    */
   private generateItemPage(page: PageEntry): string {
-    const frontmatter = this.options.frontmatter(page.item, [
-      ...this.logicalPath(page.node),
-      page.name,
-    ]);
-    if (page.via?.docs && this.options.frontmatter === defaultFrontmatter)
-      frontmatter.description = summaryLine(page.via.docs);
+    const frontmatter = this.frontmatter(
+      page.item,
+      [...this.logicalPath(page.node), page.name],
+      page.via
+    );
     const sections: string[] = [];
 
     sections.push(this.formatFrontmatter(frontmatter));
@@ -1984,7 +2006,7 @@ export class RustdocGenerator {
     refs.delete(item.id);
 
     // Convert to CardData, filtering to local crate types only
-    const cards: CardData[] = [];
+    const targets: { item: Item; title: string; href: string; kind: ItemKind }[] = [];
     for (const refId of refs) {
       const refItem = this.getItem(refId);
       if (!refItem?.name) continue;
@@ -2001,15 +2023,18 @@ export class RustdocGenerator {
       const href = this.itemUrls.get(String(refId));
       if (!href) continue;
 
-      cards.push({
-        title: refItem.name,
-        href,
-        description: summaryLine(refItem.docs) || `A ${refKind}`,
-      });
+      targets.push({ item: refItem, title: refItem.name, href, kind: refKind });
     }
 
     // Sort by title and limit to 6 cards
-    return cards.sort((a, b) => a.title.localeCompare(b.title)).slice(0, 6);
+    return targets
+      .sort((a, b) => a.title.localeCompare(b.title))
+      .slice(0, 6)
+      .map(({ item, title, href, kind }) => ({
+        title,
+        href,
+        description: this.plainSummary(item) || `A ${kind}`,
+      }));
   }
 
   /**
@@ -3078,24 +3103,41 @@ export class RustdocGenerator {
     );
     return "unknown";
   }
+  private plainSummary(item: Item): string {
+    if (!item.docs) return "";
+    const cached = this.plainSummaries.get(item);
+    if (cached?.source === item.docs) return cached.value;
+    const value = summaryLine(item.docs, this.parseMarkdown);
+    this.plainSummaries.set(item, { source: item.docs, value });
+    return value;
+  }
+
+  private frontmatter(item: Item, path: string[], via?: Item): Record<string, unknown> {
+    if (this.options.frontmatter) return this.options.frontmatter(item, path);
+    const kind = getItemKind(item.inner);
+    const name = path.at(-1) ?? item.name;
+    return {
+      title: name ?? "API",
+      description: via?.docs
+        ? this.plainSummary(via)
+        : this.plainSummary(item) || `Documentation for ${name}`,
+      icon: kind === "unknown" ? "FileText" : kindToIcon(kind),
+    };
+  }
 }
 
-// Default options
-
-/**
- * Default frontmatter generator for FumaDocs v14+.
- * Generates title, description, and icon based on item kind.
- */
-function defaultFrontmatter(item: Item, path: string[]): Record<string, unknown> {
-  const kind = getItemKind(item.inner);
-  // Handle unknown kinds gracefully with default icon
-  const icon = kind === "unknown" ? "FileText" : kindToIcon(kind);
-  return {
-    title: path[path.length - 1] ?? item.name ?? "API",
-    description:
-      summaryLine(item.docs) || `Documentation for ${path[path.length - 1] ?? item.name}`,
-    icon,
-  };
+/** Map every occupied anchor to the next numeric suffix to try for that base. */
+function claimAnchor(used: Map<string, number>, base: string, firstSuffix: number): string {
+  let candidate = base;
+  let n = used.get(base);
+  if (n !== undefined) {
+    do {
+      candidate = base + "-" + n++;
+    } while (used.has(candidate));
+    used.set(base, n);
+  }
+  used.set(candidate, firstSuffix);
+  return candidate;
 }
 
 /**

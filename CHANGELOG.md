@@ -6,6 +6,20 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Rel
 
 ## Unreleased
 
+## 0.5.1 - 2026-11-17
+
+### Changed
+
+- Cache Markdown syntax trees during each render and share item descriptions across frontmatter and related-item cards. Filename and heading allocation now skips previously tested suffixes.
+- Reuse small workspace members between indexing and rendering under a shared input-size budget. Each member's digest is checked again before rendering.
+- Verify output files in batches. Reruns preserve matching pages and manifests, repair edited or missing current pages, and report the numbers written, unchanged, and removed.
+- CLI help opens with a preview and a write example. Help and version commands load independently of the conversion engine. Argument errors link to usage, and partial workspace runs report skipped members.
+- Expand the authoring guide with item examples, README-backed crate overviews, hand-written Fumadocs pages, and the library workflow for private documentation.
+
+### Fixed
+
+- Preserve the Rust visibility of tuple fields when a custom filter includes internal items.
+
 ## 0.5.0 - 2026-11-17
 
 ### Changed

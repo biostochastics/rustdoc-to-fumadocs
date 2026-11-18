@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, it } from "vitest";
-import { mkdtemp, mkdir, readFile, readdir, rm, writeFile, symlink } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, readdir, rm, writeFile, symlink, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { OutputTransaction } from "../../src/output.js";
@@ -62,4 +62,33 @@ it("leaves previously removed obsolete directories absent", async () => {
   await rm(join(root, "a/module"), { recursive: true });
   await publish({ "a/new.mdx": "page" });
   expect(await readdir(join(root, "a"))).toEqual(["new.mdx"]);
+});
+
+it("preserves the page and manifest on an unchanged publication", async () => {
+  const files = { "a/index.mdx": "same" };
+  await publish(files);
+  const paths = [join(root, "a/index.mdx"), join(root, ".rustdoc-to-fumadocs.manifest")];
+  const stamps = () => Promise.all(paths.map(async (path) => (await stat(path)).mtimeMs));
+  const before = await stamps();
+  await publish(files);
+  expect(await stamps()).toEqual(before);
+});
+
+it("repairs live edits and removals after preparation, including spilled workspace members", async () => {
+  const files = Object.fromEntries(
+    Array.from({ length: 60 }, (_, i) => [`api/page-${i}.mdx`, "Résumé 🦀\n".repeat(5500) + i])
+  );
+  await publish(files);
+  const tx = await OutputTransaction.open(root);
+  try {
+    for (const [path, content] of Object.entries(files)) await tx.add([{ path, content }]);
+    await writeFile(join(root, "api/page-0.mdx"), "changed");
+    await rm(join(root, "api/page-59.mdx"));
+    await tx.commit("crate:a");
+    for (const path of ["api/page-0.mdx", "api/page-59.mdx"]) {
+      expect(await readFile(join(root, path), "utf8")).toBe(files[path]);
+    }
+  } finally {
+    await tx.close();
+  }
 });

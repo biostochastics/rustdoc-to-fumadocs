@@ -7,7 +7,7 @@ git clone https://github.com/biostochastics/rustdoc-to-fumadocs.git
 cd rustdoc-to-fumadocs
 npm ci
 npm pack
-npm install --global ./rustdoc-to-fumadocs-0.5.0.tgz
+npm install --global ./rustdoc-to-fumadocs-0.5.1.tgz
 rustdoc-to-fumadocs --version
 ```
 

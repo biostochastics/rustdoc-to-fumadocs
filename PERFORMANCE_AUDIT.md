@@ -1,8 +1,29 @@
 # Converter performance audit
 
-November 17, 2026 · rustdoc-to-fumadocs 0.5.0
+November 17, 2026 · rustdoc-to-fumadocs 0.5.0 and 0.5.1
 
-**Cache the plain-text description of each item first.** On `syn`, that change alone cut a fresh CLI publication from **790 to 689 ms**. Reusing parsed Markdown as well brought it to **649 ms**, an 18% reduction with identical output. For crates with thousands of small pages, the writer offers a different opportunity. Batching destination checks reduced the time to publish an unchanged 4,002-file tree from **664 to 477 ms**. These are measurements of temporary prototypes. The converter source received no audit edits.
+## Release 0.5.1 results
+
+Publishing `syn` to an empty directory took **647 ms**, down from **789 ms**. Rebuilding 4,002 unchanged files took **380 ms**, down from **931 ms**. The following medians compare the release with `b25483b` on the same Apple M4 Pro and local APFS volume. Each command ran in a fresh Node 22.17.1 process. We interleaved builds and workloads, discarded one warm-up round, and kept five observations per cell. [Release measurements](benchmarks/release-0.5.1.json)
+
+| Input                                       | Fresh before (ms) | Fresh after (ms) | Unchanged before (ms) | Unchanged after (ms) |
+| ------------------------------------------- | ----------------: | ---------------: | --------------------: | -------------------: |
+| `syn`                                       |               789 |              647 |                   785 |                  601 |
+| `serde_core`                                |               471 |              426 |                   465 |                  410 |
+| 4,002 small files                           |             1,013 |              923 |                   931 |                  380 |
+| Six real crates in one workspace            |             1,384 |            1,176 |                 1,378 |                1,102 |
+| 32 `smallvec` workspace members             |             1,537 |            1,329 |                 1,542 |                1,265 |
+| 22.93 MiB input dominated by external paths |               420 |              413 |                   416 |                  414 |
+
+`--help` fell from **101 to 26 ms**. Indexing 2,048 colliding function names took **2.2 ms** in the release, compared with **201 ms** in the original audit. Fresh `syn` peak RSS fell from **286 to 230 MiB**. Caching small workspace members raised peak RSS on the 32-member unchanged run from **236 to 249 MiB**. The path-heavy workload saw little change.
+
+The renderer retains up to 64 parsed Markdown trees per render, with a combined 256 KiB source budget and a 64 KiB per-document limit. A 4 MiB budget on raw workspace input sizes governs reuse between passes. On reruns the writer retains up to 4 MiB of estimated page content, spills additional content to disk, and checks up to 16 destinations at a time. These budgets measure input or page content. In a ten-render test with large docstrings and external links invalidated before each render, post-GC heap stayed between **14.0 and 14.9 MiB** and every render produced the same digest.
+
+The release matched the baseline’s ordered file paths, contents, and warnings across 108 configurations and **2,480 file comparisons**. Published manifests matched in every timed workload. All 375 real-crate MDX pages compiled and passed internal-link checks. The consumer site built with Fumadocs 14.7.7, 15.8.5, and 16.19.4.
+
+## Baseline and prototype measurements
+
+The following sections document the original audit of 0.5.0. Its isolated experiments measured the contribution of individual changes before integration in 0.5.1.
 
 ## What a conversion costs
 
@@ -23,7 +44,7 @@ Layout changes mostly affected filesystem work on `syn`. Module, flat, and kind 
 
 ## 1. Reuse work in the Markdown pipeline
 
-`fromMarkdown` accounted for **47%** of sampled time on a `syn --json` run and **37%** on `serde_core`. Markdown serialization accounted for another **8%** and **12%**. Garbage collection appeared separately at **12%** and **7%**. A separate call-count run found **1,838 full Markdown parses** on `syn`. The existing caches already reuse resolved docstrings and formatted summaries within a generator. The remaining repetition crosses different consumers of the same document. [Document transforms](src/docs.ts#L26) · [Generator caches](src/generator.ts#L1245)
+`fromMarkdown` accounted for **47%** of sampled time on a `syn --json` run and **37%** on `serde_core`. Markdown serialization accounted for another **8%** and **12%**. Garbage collection appeared separately at **12%** and **7%**. A separate call-count run found **1,838 full Markdown parses** on `syn`. The existing caches already reuse resolved docstrings and formatted summaries within a generator. The remaining repetition crosses different consumers of the same document. [Document transforms](src/docs.ts) · [Generator caches](src/generator.ts)
 
 | Reason for parsing, module layout                    | syn calls | serde_core calls |
 | ---------------------------------------------------- | --------: | ---------------: |
@@ -34,7 +55,7 @@ Layout changes mostly affected filesystem work on `syn`. Module, flat, and kind 
 | Extract the formatted index summary                  |       284 |               58 |
 | **Total**                                            | **1,838** |          **553** |
 
-**Start with the plain description.** Each reference card computes its target’s `summaryLine` from the full raw docstring. Default frontmatter computes it again. A widely referenced type therefore incurs parsing cost on incoming references. The 649 calls on `syn` saw just 272 distinct source strings. The prototype used a `WeakMap` keyed by the item, stored the raw docs alongside the result, and reused it across all four raw-summary call sites. The raw-text key check preserves behavior if an item’s docs change. A further unmeasured improvement is to sort eligible card targets and select the six displayed entries before deriving their descriptions. Preserve stable ordering for equal titles. [Card construction](src/generator.ts#L2007) · [Default frontmatter](src/generator.ts#L3096) · [Plain summary](src/docs.ts#L421)
+**Start with the plain description.** Each reference card computes its target’s `summaryLine` from the full raw docstring. Default frontmatter computes it again. A widely referenced type therefore incurs parsing cost on incoming references. The 649 calls on `syn` saw just 272 distinct source strings. The prototype used a `WeakMap` keyed by the item, stored the raw docs alongside the result, and reused it across all four raw-summary call sites. The raw-text key check preserves behavior if an item’s docs change. A further unmeasured improvement is to sort eligible card targets and select the six displayed entries before deriving their descriptions. Preserve stable ordering for equal titles. [Card construction](src/generator.ts) · [Default frontmatter](src/generator.ts) · [Plain summary](src/docs.ts)
 
 | Prototype                     | syn generation ms | syn fresh CLI ms | serde_core generation ms | serde_core fresh CLI ms |
 | ----------------------------- | ----------------: | ---------------: | -----------------------: | ----------------------: |
@@ -45,7 +66,7 @@ Layout changes mostly affected filesystem work on `syn`. Module, flat, and kind 
 
 The combined prototype’s five fresh `syn` CLI runs ranged from **643 to 674 ms**, versus **786 to 798 ms** for baseline. Plain-description caching gave little benefit on the smaller crates. The combined prototype also left `either` generation essentially flat at **86 versus 85 ms**. These gains depend on document reuse.
 
-**Prototype parsed-document reuse separately.** The experiment retained the 64 most recently parsed exact source strings and their original syntax trees. Link analysis, fence discovery, plain summaries, and section lookup borrowed those trees. Sanitization, heading demotion, and formatted summary generation received a `structuredClone` because they mutate nodes. This preserves reference definitions beyond the first paragraph, nested headings, GFM tables, doctests, and HTML processing. For a production design, scope retention to the conversion and add a byte budget or skip unusually large documents. The experiment capped entry count only. Keep resolved URLs scoped to the generator’s external-page map. [Markdown parser](src/docs.ts#L26) · [Mutating transforms](src/docs.ts#L252) · [External-page invalidation](src/generator.ts#L732)
+**Prototype parsed-document reuse separately.** The experiment retained the 64 most recently parsed exact source strings and their original syntax trees. Link analysis, fence discovery, plain summaries, and section lookup borrowed those trees. Sanitization, heading demotion, and formatted summary generation received a `structuredClone` because they mutate nodes. This preserves reference definitions beyond the first paragraph, nested headings, GFM tables, doctests, and HTML processing. For a production design, scope retention to the conversion and add a byte budget or skip unusually large documents. The experiment capped entry count only. Keep resolved URLs scoped to the generator’s external-page map. [Markdown parser](src/docs.ts) · [Mutating transforms](src/docs.ts) · [External-page invalidation](src/generator.ts)
 
 ## 2. Reduce serial work when publishing many files
 
@@ -57,7 +78,7 @@ A synthetic module of ordinary public functions with unique names and no docstri
 |            1,000 |        1,002 |            165 |          367 |              354 |
 |            4,000 |        4,002 |            236 |        1,024 |              974 |
 
-The transaction writes every generated file before it compares the manifest and live file digests. On the unchanged 4,002-file run, instrumentation counted **4,003 staged writes**, **4,003 live file reads**, and **12,010 live `lstat` calls**. Only the manifest was replaced. The staged writes totaled **1,247,629 bytes** including the manifest. On `syn`, the unchanged counts were **283, 283, and 1,000**. These are Node filesystem API calls observed at the output directory. [Staging](src/output.ts#L97) · [Destination inspection](src/output.ts#L114) · [Commit](src/output.ts#L129)
+The transaction writes every generated file before it compares the manifest and live file digests. On the unchanged 4,002-file run, instrumentation counted **4,003 staged writes**, **4,003 live file reads**, and **12,010 live `lstat` calls**. Only the manifest was replaced. The staged writes totaled **1,247,629 bytes** including the manifest. On `syn`, the unchanged counts were **283, 283, and 1,000**. These are Node filesystem API calls observed at the output directory. [Staging](src/output.ts) · [Destination inspection](src/output.ts) · [Commit](src/output.ts)
 
 **Batch the read-only comparison under the existing lock.** The prototype checked up to 16 destinations concurrently with parent creation disabled, awaited every result, collected changes in original order, and kept installation and rollback sequential. On 4,002 unchanged files, median **commit** fell from **351 to 162 ms** and **whole publication** from **664 to 477 ms**. Fresh publication moved only from **751 to 746 ms**. On 1,002 unchanged files, whole publication fell from **168 to 118 ms**. Fresh and unchanged 4,002-file outputs matched the baseline manifest and on-disk digests. Focused checks also passed for edited stale pages, missing current pages, other owners, partial runs, conflicting destinations, and aliased directories.
 
@@ -65,7 +86,7 @@ Eliminating unchanged staging could save more, but needs a separate transaction 
 
 ## 3. Keep workspace memory bounded and target validation where it matters
 
-The current CLI performs two member passes. It keeps route strings, member metadata, and input digests between passes, then reloads and validates one member at a time for rendering. The earlier codebase audit described a previous release that retained every crate. Reintroducing that retention would trade away a measured benefit. [Workspace indexing](src/cli.ts#L504) · [Second pass and digest check](src/cli.ts#L558)
+The current CLI performs two member passes. It keeps route strings, member metadata, and input digests between passes, then reloads and validates one member at a time for rendering. The earlier codebase audit described a previous release that retained every crate. Reintroducing that retention would trade away a measured benefit. [Workspace indexing](src/cli.ts) · [Second pass and digest check](src/cli.ts)
 
 | Workspace                         | Files | Fresh CLI ms | Peak RSS MiB | Heap after indexing and GC, MiB |
 | --------------------------------- | ----: | -----------: | -----------: | ------------------------------: |
@@ -78,11 +99,11 @@ The six-crate workspace did **12 parses and 12 validations**. Across both passes
 
 **Input shape determines whether validation deserves priority.** Adding 262,144 valid external path summaries to `smallvec` left all nine output files byte-identical. At **22.93 MiB** of input, JSON parsing took **112 ms**, validation **92 ms**, and generation **69 ms**. With 32,768 added summaries the corresponding times were **13, 30, and 70 ms**. The larger case reached **284 MiB** peak RSS in the phase process. For installations with large dependency path tables, measure input parsing and shape validation independently of page count.
 
-For those workloads, investigate a compact normalized representation or a byte-bounded reuse policy for small workspace members. Preserve the between-pass digest check, unit-variant normalization, legacy formats, error paths, and partial-workspace semantics. The validator already marks normalized crate objects in a `WeakSet`, so passing its result to a generator avoids an extra validation within a pass. An isolated change to enumerate a tagged variant’s keys once moved `syn` validation only from **85 to 82 ms** and `serde_core` from **63 to 62 ms**. That is a lower priority. [Input loader](src/cli.ts#L375) · [Tagged schema](src/rustdoc-schema.ts#L13) · [Validator](src/validation.ts#L270)
+For those workloads, investigate a compact normalized representation or a byte-bounded reuse policy for small workspace members. Preserve the between-pass digest check, unit-variant normalization, legacy formats, error paths, and partial-workspace semantics. The validator already marks normalized crate objects in a `WeakSet`, so passing its result to a generator avoids an extra validation within a pass. An isolated change to enumerate a tagged variant’s keys once moved `syn` validation only from **85 to 82 ms** and `serde_core` from **63 to 62 ms**. That is a lower priority. [Input loader](src/cli.ts) · [Tagged schema](src/rustdoc-schema.ts) · [Validator](src/validation.ts)
 
 ## 4. Fix quadratic filename allocation for colliding identifiers
 
-File allocation probes the bare name, then the kind suffix, then every numeric suffix starting over at the beginning. Rust identifiers can differ by case while generated filenames share the same case-folded namespace. In that family, allocating the next name repeats every earlier unsuccessful probe. The following isolates `pageIndex()` with validation complete, using the default module layout. [Filename allocation](src/generator.ts#L1049)
+File allocation probes the bare name, then the kind suffix, then every numeric suffix starting over at the beginning. Rust identifiers can differ by case while generated filenames share the same case-folded namespace. In that family, allocating the next name repeats every earlier unsuccessful probe. The following isolates `pageIndex()` with validation complete, using the default module layout. [Filename allocation](src/generator.ts)
 
 | Public functions | Unique names ms | Case variants of the same ASCII name ms | Case variants with suffix cursor ms |
 | ---------------: | --------------: | --------------------------------------: | ----------------------------------: |
@@ -90,18 +111,18 @@ File allocation probes the bare name, then the kind suffix, then every numeric s
 |              512 |             0.6 |                                    12.7 |                                 0.6 |
 |            2,048 |             1.3 |                                   200.9 |                                 1.8 |
 
-The prototype remembered the next suffix per directory’s occupied-name set, kind, and folded base for short ASCII names. It still tested each candidate for occupancy and reproduced every ordered route in the benchmark. Keep the existing allocation path for Unicode and byte-truncated names until equivalence is established for those cases. Kind-page slugs, scoped headings, and member anchors have similar restart loops. Their impact on the real corpus was unmeasured. Prioritize this fix for generated Rust APIs with naming collisions. [Kind anchors](src/generator.ts#L1016) · [Scoped headings](src/generator.ts#L1326) · [Member anchors](src/generator.ts#L1424)
+The prototype remembered the next suffix per directory’s occupied-name set, kind, and folded base for short ASCII names. It still tested each candidate for occupancy and reproduced every ordered route in the benchmark. Keep the existing allocation path for Unicode and byte-truncated names until equivalence is established for those cases. Kind-page slugs, scoped headings, and member anchors have similar restart loops. Their impact on the real corpus was unmeasured. Prioritize this fix for generated Rust APIs with naming collisions. [Kind anchors](src/generator.ts) · [Scoped headings](src/generator.ts) · [Member anchors](src/generator.ts)
 
 ## 5. Defer heavyweight imports for CLI metadata commands
 
-A temporary build deferred the generator, validation, and workspace module imports until conversion starts. Fresh-process `--help` fell from **92 to 28 ms**, and `--version` from **92 to 28 ms**. Minimal JSON preview took **117 versus 116 ms**. The three commands produced identical stdout in both builds. This is a small, isolated improvement for metadata commands. A real conversion still needs those dependencies. [CLI imports](src/cli.ts#L16) · [CLI dispatch](src/cli.ts#L631)
+A temporary build deferred the generator, validation, and workspace module imports until conversion starts. Fresh-process `--help` fell from **92 to 28 ms**, and `--version` from **92 to 28 ms**. Minimal JSON preview took **117 versus 116 ms**. The three commands produced identical stdout in both builds. This is a small, isolated improvement for metadata commands. A real conversion still needs those dependencies. [CLI imports](src/cli.ts) · [CLI dispatch](src/cli.ts)
 
 ## Verification and reproduction
 
 - **Revision.** The audit began at `d22e5e6`. During measurement the workspace advanced to `b25483b`, which changed tuple-field visibility rendering. The scaling and diagnostic runs used an isolated build of the original revision. In an interleaved fresh-write check, the newer revision produced identical output manifests on `syn` and `serde_core`, with medians of 788 and 468 ms. The test suite passed all 488 tests at the baseline and all 490 at the newer revision.
 - **Corpus and equivalence.** The six real inputs were generated with rustc 1.98.1, format 60. Their 375 default-layout MDX pages compiled and their internal links passed the repository checker. Four rendering or validation prototypes each matched the baseline’s ordered paths, file contents, and warnings across **108 configurations** and **2,472 baseline file comparisons per prototype**. This covered all twelve baseline fixtures plus the six crates, three layouts, and both the default flags and a combined indexes/cards/tabs-off setting.
 - **Sampling.** CLI, phase, and prototype timing tables use five observations per cell after one initial round, with fresh processes unless otherwise specified. Workspace phase and post-index heap figures use three instrumented runs. Per-document counts, filesystem counts, single-crate forced-GC snapshots, and the two V8 CPU profiles are separate diagnostics. The profiles had 707 and 358 samples respectively. Publication excludes Rust compilation and downstream MDX compilation.
-- **Scope.** Absolute timings describe one Node version and one host with a warm local filesystem. Cold storage, network filesystems, other Node versions, and inputs near the 100 MiB CLI ceiling were outside the measurement set. A 64-entry syntax-tree cache still needs a long-lived, large-document memory test before adoption.
+- **Scope.** Absolute timings describe one Node version and one host with a warm local filesystem. Cold storage, network filesystems, other Node versions, and inputs near the 100 MiB CLI ceiling were outside the measurement set. The large-document repeat-render measurement appears in the release results above.
 
 The benchmark runner accepts a rustdoc JSON file or a workspace directory containing its prebuilt target. It runs preview, fresh publication, and unchanged publication in separate processes and checks published sizes against the preview. The measurements file contains the timed observations, phase breakdowns, diagnostic counts, output fingerprints, and input hashes. [Benchmark runner](scripts/benchmark-converter.py) · [Measurement data](benchmarks/performance-audit-2026-11-17.json)
 

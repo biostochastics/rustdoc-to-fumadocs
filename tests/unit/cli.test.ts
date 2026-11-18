@@ -5,6 +5,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { appendFileSync } from "node:fs";
 import { mkdtemp, mkdir, rm, readdir, readFile, writeFile, chmod } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve, dirname, sep } from "node:path";
@@ -233,6 +234,8 @@ describe("run() - end-to-end CLI", () => {
     const code = await run(["--group-by", "wat"], streams);
     expect(code).toBe(1);
     expect(stderr()).toMatch(/Invalid --group-by/);
+    expect(stderr()).toContain("rustdoc-to-fumadocs --help");
+    expect(stderr()).not.toContain("Error: Error:");
   });
 
   it("errors with exit 1 when input file does not exist", async () => {
@@ -240,6 +243,16 @@ describe("run() - end-to-end CLI", () => {
     const code = await run(["--input", join(tmp, "missing.json")], streams);
     expect(code).toBe(1);
     expect(stderr()).toMatch(/Input file not found/);
+  });
+
+  it("reports the files actually written and unchanged on successive publications", async () => {
+    const args = ["--input", fixturePath, "--output", join(tmp, "out")];
+    const first = captureStreams();
+    expect(await run(args, first.streams)).toBe(0);
+    expect(first.stdout()).toContain("5 written, 0 unchanged, 0 removed.");
+    const second = captureStreams();
+    expect(await run(args, second.streams)).toBe(0);
+    expect(second.stdout()).toContain("0 written, 5 unchanged, 0 removed.");
   });
 
   it("errors with exit 1 and valid JSON when --json + missing input", async () => {
@@ -474,6 +487,27 @@ describe("run() - --workspace mode", () => {
     expect(code).toBe(0);
     expect(stderr()).toMatch(/testy: Rustdoc format version 999 is newer/);
   });
+
+  it.each([0, 5 * 1024 * 1024])(
+    "rechecks member bytes before rendering (%i padding bytes)",
+    async (padding) => {
+      const json = JSON.parse(await readFile(fixturePath, "utf8")) as { format_version: number };
+      json.format_version = 999;
+      const target = join(tmp, "target");
+      await makeWorkspace(target, JSON.stringify(json) + " ".repeat(padding));
+      const { streams, stderr } = captureStreams();
+      const code = await run(["--workspace", tmp, "--output", join(tmp, "out")], {
+        stdout: streams.stdout,
+        stderr(message) {
+          streams.stderr(message);
+          if (message.includes("is newer")) appendFileSync(join(target, "doc", "testy.json"), "\n");
+        },
+      });
+      expect(code).toBe(1);
+      expect(stderr()).toContain("Rustdoc input changed during generation");
+      await expect(readdir(join(tmp, "out"))).rejects.toMatchObject({ code: "ENOENT" });
+    }
+  );
 
   /** Workspace with members `pub` (published) and `tool` (publish = false). */
   async function makeTwoMemberWorkspace(): Promise<void> {

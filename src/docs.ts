@@ -24,13 +24,40 @@ import { gfm } from "micromark-extension-gfm";
 import type { Nodes, Parents, PhrasingContent, Root } from "mdast";
 
 const parseOptions = { extensions: [gfm()], mdastExtensions: [gfmFromMarkdown()] };
-const parse = (source: string): Root => fromMarkdown(source, parseOptions);
+export type MarkdownParser = (source: string, mutable?: boolean) => Root;
+const parseMarkdown: MarkdownParser = (source) => fromMarkdown(source, parseOptions);
+
+/** Cache syntax only. Each render owns its cache and mutating transforms get a private tree. */
+export function createMarkdownParser(): MarkdownParser {
+  const trees = new Map<string, { root: Root; bytes: number }>();
+  let sourceBytes = 0;
+  return (source, mutable = false) => {
+    let entry = trees.get(source);
+    if (entry) {
+      trees.delete(source);
+    } else {
+      const root = parseMarkdown(source);
+      const bytes = Buffer.byteLength(source);
+      if (bytes > 64 * 1024) return root;
+      while (trees.size >= 64 || sourceBytes + bytes > 256 * 1024) {
+        const oldest = trees.entries().next();
+        if (oldest.done) break;
+        sourceBytes -= oldest.value[1].bytes;
+        trees.delete(oldest.value[0]);
+      }
+      entry = { root, bytes };
+      sourceBytes += bytes;
+    }
+    trees.set(source, entry);
+    return mutable ? structuredClone(entry.root) : entry.root;
+  };
+}
 
 /** A function that resolves a link destination (or shortcut label). */
 export type LinkResolver = (key: string) => LinkResolution;
 
 /** Split Markdown at code blocks identified by CommonMark, including blocks in lists or quotes. */
-export function splitFences(md: string): string[] {
+export function splitFences(md: string, parse = parseMarkdown): string[] {
   const chunks: string[] = [];
   let cursor = 0;
   function walk(node: Nodes): void {
@@ -49,8 +76,8 @@ export function splitFences(md: string): string[] {
 }
 
 /** Apply `fn` to the prose chunks of `md` only. */
-export function mapProse(md: string, fn: (prose: string) => string): string {
-  return splitFences(md)
+export function mapProse(md: string, fn: (prose: string) => string, parse = parseMarkdown): string {
+  return splitFences(md, parse)
     .map((chunk, i) => (i % 2 === 0 ? fn(chunk) : chunk))
     .join("");
 }
@@ -123,7 +150,8 @@ export function looksLikeRustPath(label: string): boolean {
 export function rewriteDocLinks(
   md: string,
   resolve: LinkResolver,
-  preserveFragments = true
+  preserveFragments = true,
+  parse = parseMarkdown
 ): string {
   if (!md?.includes("[")) return md;
   const tree = parse(md);
@@ -249,9 +277,9 @@ function rewriteProse(text: string, resolve: LinkResolver): string {
  * `### Examples` for `levels = 2`), so docstring sections nest under the
  * page's own headings. Headings that would exceed level 6 become bold text.
  */
-export function demoteHeadings(md: string, levels: number): string {
+export function demoteHeadings(md: string, levels: number, parse = parseMarkdown): string {
   if (!md || levels <= 0 || !/[#=-]/.test(md)) return md;
-  const tree = parse(md);
+  const tree = parse(md, true);
   let changed = false;
   function demote(parent: Parents): void {
     for (const [i, n] of parent.children.entries()) {
@@ -279,7 +307,8 @@ export function demoteHeadings(md: string, levels: number): string {
  */
 export function takeSection(
   md: string | null | undefined,
-  name: string
+  name: string,
+  parse = parseMarkdown
 ): { section: string | undefined; rest: string } {
   if (!md?.toLowerCase().includes(name.toLowerCase()))
     return { section: undefined, rest: md ?? "" };
@@ -383,14 +412,18 @@ function serialize(root: Root, normalizeDoctests: boolean, resolve?: LinkResolve
 }
 
 /** Render CommonMark/GFM as passive MDX without interpreting Rust documentation as JSX or JS. */
-export function sanitizeDocstring(raw: string, resolve?: LinkResolver): string {
-  return raw ? serialize(parse(raw), true, resolve) : raw;
+export function sanitizeDocstring(
+  raw: string,
+  resolve?: LinkResolver,
+  parse = parseMarkdown
+): string {
+  return raw ? serialize(parse(raw, true), true, resolve) : raw;
 }
 
 /** Render a single complete prose paragraph, keeping links and inline formatting intact. */
-export function summaryMarkdown(md: string | null | undefined): string {
+export function summaryMarkdown(md: string | null | undefined, parse = parseMarkdown): string {
   if (!md) return "";
-  const root = parse(md);
+  const root = parse(md, true);
   const paragraph = root.children.find((n) => n.type === "paragraph");
   if (paragraph?.type !== "paragraph") return "";
   const definitions = new Map(
@@ -418,7 +451,7 @@ export function summaryMarkdown(md: string | null | undefined): string {
 }
 
 /** Plain text for frontmatter and string props. */
-export function summaryLine(md: string | null | undefined): string {
+export function summaryLine(md: string | null | undefined, parse = parseMarkdown): string {
   if (!md) return "";
   const node = parse(md).children.find((n) => n.type === "paragraph");
   if (!node) return "";

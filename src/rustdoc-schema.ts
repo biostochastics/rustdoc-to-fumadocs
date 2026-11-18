@@ -19,13 +19,14 @@ function tagged(
     if (typeof raw === "string" && Object.hasOwn(units, raw)) return { [units[raw]]: true };
     if (allowUnknownUnit && typeof raw === "string" && !Object.hasOwn(variants, raw))
       return { [raw]: true };
-    if (!raw || typeof raw !== "object" || Array.isArray(raw) || Object.keys(raw).length !== 1) {
+    const keys = raw && typeof raw === "object" && !Array.isArray(raw) ? Object.keys(raw) : [];
+    if (keys.length !== 1) {
       ctx.addIssue({ code: "custom", message: "Expected a single rustdoc variant" });
       return z.NEVER;
     }
-    const [key, payload] = Object.entries(raw as Record<string, unknown>)[0];
+    const key = keys[0];
     if (!Object.hasOwn(variants, key)) return raw;
-    const result = variants[key].safeParse(payload);
+    const result = variants[key].safeParse((raw as Record<string, unknown>)[key]);
     if (result.success) return { [key]: result.data };
     for (const issue of result.error.issues) ctx.addIssue({ ...issue, path: [key, ...issue.path] });
     return z.NEVER;

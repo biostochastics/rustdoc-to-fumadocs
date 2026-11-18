@@ -4,6 +4,7 @@
 
 import { describe, it, expect } from "vitest";
 import {
+  createMarkdownParser,
   rewriteDocLinks,
   demoteHeadings,
   takeSection,
@@ -12,6 +13,22 @@ import {
   looksLikeRustPath,
   type LinkResolver,
 } from "../../src/docs.js";
+
+it("isolates mutating Markdown transforms and bounds each render's parser cache", () => {
+  const parse = createMarkdownParser();
+  const source = "# Original heading";
+  const original = parse(source);
+  expect(demoteHeadings(source, 2, parse)).toContain("### Original heading");
+  expect(parse(source)).toBe(original);
+  expect(original.children[0]).toMatchObject({ type: "heading", depth: 1 });
+  expect(createMarkdownParser()(source)).not.toBe(original);
+
+  const large = "x".repeat(65 * 1024);
+  expect(parse(large)).not.toBe(parse(large));
+  // Five individually cacheable documents exceed the aggregate source budget.
+  for (let i = 0; i < 5; i++) parse("x".repeat(60 * 1024) + i);
+  expect(parse(source)).not.toBe(original);
+});
 
 const links: Record<string, string | null> = {
   "`Foo`": "/api/c/Foo",
