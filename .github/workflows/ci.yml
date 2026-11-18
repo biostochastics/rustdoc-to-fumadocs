@@ -3,6 +3,7 @@ name: CI
 on:
   push:
     branches: [main]
+    tags: ["**"]
   pull_request:
     branches: [main]
   workflow_dispatch:
@@ -11,11 +12,12 @@ permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' && github.ref_type != 'tag' }}
 
 jobs:
   checks:
+    if: github.event.deleted != true
     timeout-minutes: 15
     runs-on: ubicloud-standard-2
     steps:
@@ -29,23 +31,28 @@ jobs:
       - run: npm ci
       - run: npm run format:check && npm run lint && npm run typecheck
       - run: npm run test:coverage
-      - name: Build and smoke-test the packed CLI
+      - name: Build and smoke-test the installed package
         run: |
           mkdir -p "$RUNNER_TEMP/package" "$RUNNER_TEMP/consumer"
           npm pack --pack-destination "$RUNNER_TEMP/package"
           npm install --prefix "$RUNNER_TEMP/consumer" --no-audit --no-fund "$RUNNER_TEMP/package"/*.tgz
           cmp llms.txt "$RUNNER_TEMP/consumer/node_modules/rustdoc-to-fumadocs/llms.txt"
           cli="$RUNNER_TEMP/consumer/node_modules/.bin/rustdoc-to-fumadocs"
-          "$cli" --version
+          test "$("$cli" --version)" = "$(node -p "require('./package.json').version")"
           "$cli" tests/fixtures/minimal.json --list-files --json > "$RUNNER_TEMP/paths.json"
           "$cli" tests/fixtures/minimal.json --json > "$RUNNER_TEMP/preview.json"
+          cd "$RUNNER_TEMP/consumer"
           node --input-type=module <<'JS'
           import assert from 'node:assert/strict';
           import { readFileSync } from 'node:fs';
+          import { RustdocGenerator } from 'rustdoc-to-fumadocs';
           const report = (name) => JSON.parse(readFileSync(process.env.RUNNER_TEMP + '/' + name + '.json'));
           const { paths } = report('paths');
           assert.ok(paths.length > 0);
           assert.deepEqual(paths, report('preview').files.map(f => f.path));
+          const input = JSON.parse(readFileSync(process.env.GITHUB_WORKSPACE + '/tests/fixtures/minimal.json'));
+          const generator = new RustdocGenerator(input, { output: '', baseUrl: '/docs/api' });
+          assert.deepEqual([...generator.filePaths()], paths);
           JS
       - uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
         if: github.event_name != 'pull_request'
@@ -53,14 +60,15 @@ jobs:
           files: coverage/lcov.info
           fail_ci_if_error: false
   test:
-    if: github.event_name == 'workflow_dispatch'
+    needs: checks
+    if: github.event_name == 'workflow_dispatch' || github.ref_type == 'tag'
     timeout-minutes: 15
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         os: [ubicloud-standard-2]
-        node: [20, 22, 26]
+        node: ["20.19.0", "22.12.0", "26"]
         include:
           - { os: windows-latest, node: 24 }
           - { os: macos-latest, node: 24 }
@@ -75,14 +83,19 @@ jobs:
       - run: npm ci
       - run: npm run test:run
   rustdoc:
-    if: github.event_name == 'workflow_dispatch'
+    name: Rust ${{ matrix.toolchains }}
+    needs: checks
+    if: github.event_name == 'workflow_dispatch' || github.ref_type == 'tag'
     timeout-minutes: 30
     runs-on: ubicloud-standard-2
     strategy:
       fail-fast: false
       matrix:
-        rust:
-          ["1.76.0", "1.80.0", "1.83.0", "1.86.0", "1.89.0", "1.92.0", "1.94.0", stable, nightly]
+        toolchains:
+          - "1.76.0 1.80.0 1.83.0"
+          - "1.86.0 1.89.0 1.92.0"
+          - "1.94.0 1.98.0 1.100.0"
+          - "stable nightly"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -92,12 +105,31 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
-      - run: rustup toolchain install "${{ matrix.rust }}" --profile minimal
-      - run: RUSTDOC="$(rustup which --toolchain "${{ matrix.rust }}" rustdoc)" bash scripts/test-rust.sh
-      - run: npm run test:crates -- itoa serde_core
-        if: matrix.rust == 'stable'
+      - name: Generate and convert rustdoc JSON for each toolchain
+        env:
+          TOOLCHAINS: ${{ matrix.toolchains }}
+        shell: bash
+        run: |
+          read -ra versions <<< "$TOOLCHAINS"
+          result=0
+          for version in "${versions[@]}"; do
+            echo "::group::Rust $version"
+            if ! (rustup toolchain install "$version" --profile minimal &&
+                  RUSTDOC="$(rustup which --toolchain "$version" rustdoc)" npm run test:rust); then
+              echo "::error::Rust $version compatibility check failed"
+              result=1
+            fi
+            echo "::endgroup::"
+          done
+          exit "$result"
+      - name: Convert third-party crates with stable Rust
+        if: matrix.toolchains == 'stable nightly'
+        env:
+          RUSTUP_TOOLCHAIN: stable
+        run: npm run test:crates
   fumadocs:
-    if: github.event_name == 'workflow_dispatch'
+    needs: checks
+    if: github.event_name == 'workflow_dispatch' || github.ref_type == 'tag'
     timeout-minutes: 30
     runs-on: ubicloud-standard-2
     strategy:

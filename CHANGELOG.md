@@ -15,6 +15,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Rel
 
 ### Changed
 
+- Run the full compatibility suite on tag pushes and manual dispatches, including the minimum supported Node.js versions. Pull requests and ordinary main-branch pushes retain a single Ubicloud check.
+
 - Bundle the CLI with lazy-loaded dependencies, stage output in bounded batches, and streamline default frontmatter, member lookups and Markdown processing. Fresh single-crate publication can install a verified staging directory with one rename.
 - Speed up rustdoc validation and short Markdown summaries. Preserve custom frontmatter, output ordering and the full byte-count preview.
 

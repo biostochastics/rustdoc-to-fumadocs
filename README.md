@@ -1,8 +1,15 @@
 <h1 align="center">rustdoc-to-fumadocs</h1>
 
 <p align="center">
-  <a href="https://github.com/biostochastics/rustdoc-to-fumadocs/actions/workflows/ci.yml"><img src="https://github.com/biostochastics/rustdoc-to-fumadocs/actions/workflows/ci.yml/badge.svg" alt="CI status"></a>
+  <a href="https://github.com/biostochastics/rustdoc-to-fumadocs/actions/workflows/ci.yml"><img src="https://github.com/biostochastics/rustdoc-to-fumadocs/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI status"></a>
+  <a href="package.json"><img src="https://img.shields.io/github/package-json/v/biostochastics/rustdoc-to-fumadocs?label=version" alt="Package version"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT license"></a>
+</p>
+
+<p align="center">
+  <a href="#compatibility"><img src="https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2Fbiostochastics%2Frustdoc-to-fumadocs%2Fmain%2Fpackage.json&amp;query=%24.engines.node&amp;label=Node.js&amp;color=43853d" alt="Supported Node.js versions"></a>
+  <a href="#compatibility"><img src="https://img.shields.io/badge/rustdoc_JSON-27%E2%80%9361-b7410e" alt="rustdoc JSON formats 27 through 61"></a>
+  <a href="#compatibility"><img src="https://img.shields.io/badge/Fumadocs-14%E2%80%9316-7357a6" alt="Fumadocs versions 14 through 16"></a>
 </p>
 
 Generate a browsable Rust API reference for a Fumadocs site. The TypeScript CLI runs on Node.js, reads the JSON that rustdoc produces for a Rust crate, and writes MDX pages and sidebar metadata. It follows public re-exports, links types across Cargo workspace members, and renders Rust signatures, members, implementations, feature gates, and safety documentation.
@@ -73,14 +80,14 @@ Register `RequestTip` in the same component map as the Fumadocs components, or d
 
 ## Compatibility
 
-| Producer or consumer  | Coverage                                                                                                                                                                                                                           |
-| --------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Rust and rustdoc JSON | Accepts formats 27–61. Real inputs exercise Rust 1.76 (27), 1.80 (30), 1.83 (35), 1.86 (39), 1.89 (53), 1.92 (56), 1.94 (57), 1.98 (60), and 1.99–1.100 (61). The November 17, 2026 nightly also emitted 61.                       |
-| Newer rustdoc formats | The generator warns, checks the shapes it consumes, and renders recognized items. A breaking change to a known shape produces a diagnostic identifying the JSON field.                                                             |
-| Fumadocs Core and UI  | Next.js production builds exercise 14.7.7, 15.8.5, and 16.19.4 with real generated pages. The compatibility job also selects the latest npm release.                                                                               |
-| Node.js               | The converter requires Node 20.19+ on 20.x or Node 22.12+. Every PR runs on Node 24. The manual compatibility workflow also covers Node 20, 22 and 26. A consuming Next.js or Fumadocs toolchain can require a newer Node release. |
+| Producer or consumer  | Coverage                                                                                                                                                                                                                                           |
+| --------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Rust and rustdoc JSON | Accepts formats 27–61. Real inputs exercise Rust 1.76 (27), 1.80 (30), 1.83 (35), 1.86 (39), 1.89 (53), 1.92 (56), 1.94 (57), 1.98 (60), and 1.99–1.100 (61). The November 17, 2026 nightly also emitted 61.                                       |
+| Newer rustdoc formats | The generator warns, checks the shapes it consumes, and renders recognized items. A breaking change to a known shape produces a diagnostic identifying the JSON field.                                                                             |
+| Fumadocs Core and UI  | Next.js production builds exercise 14.7.7, 15.8.5, and 16.19.4 with real generated pages. The compatibility job also selects the latest npm release.                                                                                               |
+| Node.js               | The converter requires Node 20.19+ on 20.x or Node 22.12+. PRs run on Node 24. Full CI also tests 20.19.0, 22.12.0 and 26 on Linux, plus Node 24 on Windows and macOS. A consuming Next.js or Fumadocs toolchain can require a newer Node release. |
 
-The manual Rust matrix generates fresh JSON on each toolchain and checks the rendered signatures, public aliases, internal links, and MDX in all three layouts. The Fumadocs matrix checks generated routes with the framework's loader and prerenders pages using its components. The latest v16 build uses the native Fumadocs MDX adapter. [Compatibility workflow](.github/workflows/ci.yml)
+Every tag push and manual CI run exercises the compatibility matrices. The Rust jobs generate fresh JSON on each toolchain and check the rendered signatures, public aliases, internal links, and MDX in all three layouts. The Fumadocs matrix checks generated routes with the framework's loader and prerenders pages using its components. The latest v16 build uses the native Fumadocs MDX adapter. [Compatibility workflow](.github/workflows/ci.yml)
 
 ## CLI
 

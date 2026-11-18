@@ -82,7 +82,9 @@ npm run test:run       # Single run
 npm run test:coverage  # With coverage
 ```
 
-Pull requests run format, lint, type, coverage and packed-CLI checks on one Node 24 Ubicloud runner. Dispatch the CI workflow manually for the additional Node, operating system, Rust producer and Fumadocs consumer matrices.
+Pull requests targeting `main` and pushes to `main` run formatting, lint, typechecking, coverage, and installed-package checks on one Node 24 Ubicloud runner.
+
+Pushing any tag runs the same checks on the tagged commit. After they pass, full CI tests the Node.js compatibility floors, Windows and macOS, Rust toolchains and third-party crates, and production builds of Fumadocs sites. To run the same suite before tagging, use `gh workflow run ci.yml --ref main` or select **Run workflow** in GitHub Actions.
 
 ## Creating a Changeset
 
