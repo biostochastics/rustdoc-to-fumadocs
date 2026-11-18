@@ -14,7 +14,7 @@ export enum ErrorCode {
   /** JSON parsing failed - malformed JSON syntax */
   INVALID_JSON = "INVALID_JSON",
 
-  /** Rustdoc format version is outside supported range (35-60) */
+  /** Rustdoc format version is outside supported range (27-61) */
   UNSUPPORTED_FORMAT_VERSION = "UNSUPPORTED_FORMAT_VERSION",
 
   /** Root module ID specified in crate.root doesn't exist in the index */
@@ -51,8 +51,8 @@ export enum ErrorCode {
  *   ErrorCode.UNSUPPORTED_FORMAT_VERSION,
  *   `Format version 99 is not supported`,
  *   {
- *     hint: "This tool supports format versions 35-60 (Rust 1.76+). Update rustdoc or use an older tool version.",
- *     context: { version: 99, minSupported: 35, maxSupported: 57 }
+ *     hint: "This tool supports format versions 27-61 (Rust 1.76+). Update rustdoc or use an older tool version.",
+ *     context: { version: 99, minSupported: 27, maxSupported: 61 }
  *   }
  * );
  * ```
@@ -92,7 +92,7 @@ export class RustdocError extends Error {
    * @example
    * ```
    * [UNSUPPORTED_FORMAT_VERSION] Format version 99 is not supported
-   * Hint: This tool supports format versions 35-60 (Rust 1.76+).
+   * Hint: This tool supports format versions 27-61 (Rust 1.76+).
    * ```
    */
   override toString(): string {

@@ -7,9 +7,15 @@ filenames down to the crate-relative path so fixtures are machine-independent.
 """
 import json
 import sys
+import re
+from pathlib import Path
 
 src, dst = sys.argv[1], sys.argv[2]
-data = json.load(open(src))
+with open(src) as source:
+    data = json.load(source)
+version = re.search(r"\.v(\d+)\.json$", Path(dst).name)
+if version and int(version[1]) != data["format_version"]:
+    sys.exit(f"Expected format {version[1]} but rustdoc emitted {data['format_version']}")
 refs = set()
 
 
@@ -20,6 +26,8 @@ def walk(node):
     elif isinstance(node, list):
         for v in node:
             walk(v)
+    elif isinstance(node, str) and node in data["paths"]:
+        refs.add(node)
     elif isinstance(node, int) and not isinstance(node, bool):
         refs.add(str(node))
 

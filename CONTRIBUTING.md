@@ -14,7 +14,7 @@ Thank you for your interest in contributing! This guide will help you get starte
 2. **Install dependencies**
 
    ```bash
-   npm install
+   npm ci
    ```
 
 3. **Run tests**
@@ -89,6 +89,8 @@ When making user-facing changes, create a changeset:
 ```bash
 npm run changeset
 ```
+
+Use a patch for backward-compatible fixes. Use a minor version for new public functionality. During 0.x development, use a minor version for incompatible changes and describe the migration. After 1.0, incompatible changes require a major version.
 
 Follow the prompts to describe your changes. This will create a markdown file in `.changeset/` that will be used to generate the changelog.
 

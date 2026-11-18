@@ -1,67 +1,15 @@
-# Test Fixtures
+# Rustdoc fixtures
 
-This directory contains rustdoc JSON files for testing.
+- `minimal.json` is a small hand-authored input for unit tests.
+- `crates/` contains the Rust sources for the re-export, kitchen-sink, and procedural-macro fixtures. From the repository root, run `bash scripts/gen-fixtures.sh v60` with Rust 1.98 or select Rust 1.94 with `CARGO_TOOLCHAIN=1.94 bash scripts/gen-fixtures.sh v57` and a rustup-managed Cargo. The pruning script checks the emitted format against the snapshot filename.
+- `layout_cases.rs` exercises private members, re-exports, name collisions, conditional APIs, and external links. Its final comment gives the rustdoc and pruning commands. Regenerate both the format 57 and 60 snapshots when changing its API.
+- `compat/lib.rs` is shared by the toolchain matrix. Its snapshots come from Rust 1.76 (format 27), 1.83 (35), and 1.100 (61). Run `npm run test:rust` to generate fresh JSON, compile all three layouts, and check signatures and links. Set `RUSTDOC=/path/to/rustdoc` to select a compiler. To refresh a snapshot, run the rustdoc command in `scripts/test-rust.sh` and pass the JSON through `scripts/prune-fixture.py`.
 
-## Files
+## Third-party crates
 
-- `minimal.json` - Minimal valid rustdoc JSON (format v57) for basic unit tests
-- `real-crates/` - Directory for rustdoc JSON from real public crates (gitignored)
-
-## Generating Test Fixtures
-
-### From resume-factory itself
-
-```bash
-cd /path/to/resume-factory
-RUSTDOCFLAGS="-Z unstable-options --output-format json" cargo +nightly doc --no-deps
-cp target/doc/resume_factory.json tools/rustdoc-to-fumadocs/tests/fixtures/real-crates/
+```sh
+npm run test:crates -- itoa@1.0.18 serde_core syn
+RUSTDOC_JSON_DIR=tests/fixtures/real-crates npm run test:crates -- itoa serde_core
 ```
 
-### From popular crates
-
-Use the test script:
-
-```bash
-./scripts/test-real-crates.sh serde anyhow thiserror
-```
-
-This will:
-
-1. Create temporary Cargo projects
-2. Add each crate as a dependency
-3. Generate rustdoc JSON
-4. Cache the JSON in `tests/fixtures/real-crates/`
-5. Run the converter and report results
-
-### Manual generation
-
-```bash
-# Create a temp project
-cargo new test-fixture --lib
-cd test-fixture
-cargo add serde
-
-# Generate rustdoc JSON
-RUSTDOCFLAGS="-Z unstable-options --output-format json" cargo +nightly doc --no-deps
-
-# Copy to fixtures
-cp target/doc/serde.json /path/to/fixtures/real-crates/
-```
-
-## Real Crate Testing
-
-The `real-crates/` directory is gitignored because:
-
-1. These files can be large (1-50MB)
-2. They should be regenerated locally for testing
-3. Different Rust versions produce different format versions
-
-Recommended crates for comprehensive testing:
-
-| Crate       | Size  | Complexity | Good For Testing                |
-| ----------- | ----- | ---------- | ------------------------------- |
-| `serde`     | Large | High       | Traits, generics, derive macros |
-| `anyhow`    | Small | Medium     | Error types, traits             |
-| `thiserror` | Small | Low        | Derive macros, enums            |
-| `tokio`     | Huge  | Very High  | Async, modules, features        |
-| `clap`      | Large | High       | Derive, builders                |
+The first command creates temporary Cargo projects, documents the named dependency, converts its JSON, compiles the generated pages, and checks internal links. An explicit release selects that exact version. The second command reads existing files such as `tests/fixtures/real-crates/itoa.json`. Cached inputs are ignored by Git.

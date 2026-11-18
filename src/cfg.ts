@@ -176,19 +176,23 @@ export function describeCfgs(cfgs: Cfg[]): string {
  * operand of a `not`.
  */
 export function requiredFeatures(cfgs: Cfg[]): string[] {
-  const out: string[] = [];
-  const visit = (cfg: Cfg): void => {
-    if (isFeature(cfg)) {
-      if (!out.includes(cfg.value)) out.push(cfg.value);
-    } else if (cfg.type === "all") {
-      cfg.items.forEach(visit);
-    } else if (cfg.type === "any") {
-      const first = cfg.items.find((c) => requiredFeatures([c]).length > 0);
-      if (first) visit(first);
+  const collect = (cfg: Cfg, out: Set<string>): void => {
+    if (isFeature(cfg)) out.add(cfg.value);
+    else if (cfg.type === "all") cfg.items.forEach((c) => collect(c, out));
+    else if (cfg.type === "any") {
+      for (const alternative of cfg.items) {
+        const features = new Set<string>();
+        collect(alternative, features);
+        if (features.size > 0) {
+          features.forEach((f) => out.add(f));
+          break;
+        }
+      }
     }
   };
-  cfgs.forEach(visit);
-  return out;
+  const result = new Set<string>();
+  cfgs.forEach((c) => collect(c, result));
+  return [...result];
 }
 
 // ---------------------------------------------------------------- parsers ----

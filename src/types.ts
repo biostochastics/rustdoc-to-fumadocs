@@ -1,12 +1,12 @@
 /**
  * TypeScript types for rustdoc JSON output.
- * Based on rustdoc_json_types crate (format versions 35-60).
+ * Normalized model for supported rustdoc JSON formats (27–61).
  * @see https://doc.rust-lang.org/nightly/nightly-rustc/rustdoc_json_types/
  */
 
 export interface RustdocCrate {
   root: Id;
-  crate_version?: string;
+  crate_version?: string | null;
   includes_private: boolean;
   index: Record<Id, Item>;
   paths: Record<Id, ItemSummary>;
@@ -15,14 +15,14 @@ export interface RustdocCrate {
 }
 
 /**
- * Item ID type. In format versions 35-55, IDs are strings like "0:123:456".
- * In format version 56+, IDs are numeric. We accept both for compatibility.
+ * Older rustdoc versions use string IDs such as "0:123:456". Newer versions
+ * (including format 35) use integers.
  * Note: JSON object keys are always strings, so index lookups use string keys.
  */
 export type Id = string | number;
 
 /**
- * Attribute format changed in format version 56+.
+ * Rustdoc attributes can be source strings or structured attributes.
  * Old: "#[derive(Debug)]"
  * New: { "other": "#[derive(Debug)]" } or { "must_use": { "reason": null } }
  */
@@ -35,13 +35,13 @@ export type Attribute =
 export interface Item {
   id: Id;
   crate_id: number;
-  name?: string;
-  span?: Span;
+  name?: string | null;
+  span?: Span | null;
   visibility: Visibility;
-  docs?: string;
+  docs?: string | null;
   links: Record<string, Id>;
   attrs: Attribute[];
-  deprecation?: Deprecation;
+  deprecation?: Deprecation | null;
   /** Format 58+: `#[stable]` / `#[unstable]` (staged_api crates only). */
   stability?: Stability | null;
   /** Format 58+: const stability (staged_api crates only). */
@@ -52,6 +52,7 @@ export interface Item {
 export interface Stability {
   /** "stable" or "unstable". */
   level: string;
+  since?: string | null;
   feature?: string | null;
 }
 
@@ -63,7 +64,7 @@ export interface ItemSummary {
 
 export interface ExternalCrate {
   name: string;
-  html_root_url?: string;
+  html_root_url?: string | null;
 }
 
 export interface Span {
@@ -79,8 +80,8 @@ export type Visibility =
   | { restricted: { parent: Id; path: string } };
 
 export interface Deprecation {
-  since?: string;
-  note?: string;
+  since?: string | null;
+  note?: string | null;
 }
 
 export type ItemKind =
@@ -112,6 +113,7 @@ export type ItemKind =
 // Discriminated union for item inner content
 export type ItemInner =
   | { module: Module }
+  | { foreign_type: true }
   | { extern_crate: ExternCrate }
   | { use: Use }
   | { struct: Struct }
@@ -140,13 +142,13 @@ export interface Module {
 
 export interface ExternCrate {
   name: string;
-  rename?: string;
+  rename?: string | null;
 }
 
 export interface Use {
   source: string;
-  name?: string;
-  id?: Id;
+  name?: string | null;
+  id?: Id | null;
   is_glob: boolean;
 }
 
@@ -157,13 +159,13 @@ export interface Struct {
 }
 
 /**
- * Struct kind format changed in version 56+:
+ * Accepted unit-struct representations:
  * - Old: { "unit": true }
  * - New: "unit" (string literal)
  */
 export type StructKind =
-  | "unit" // Format 56+: string literal for unit structs
-  | { unit: true } // Format 35-55: object for unit structs
+  | "unit" // Rustdoc string literal for unit structs
+  | { unit: true } // Legacy object for unit structs
   | { tuple: (Id | null)[] }
   | { plain: { fields: Id[]; has_stripped_fields: boolean } };
 
@@ -171,8 +173,8 @@ export type StructKind =
  * Checks if a struct is a unit struct (no fields).
  *
  * Handles format version differences:
- * - Format 56+: Uses string literal `"unit"`
- * - Format 35-55: Uses object `{ unit: true }`
+ * - Rustdoc string literal `"unit"`
+ * - Legacy object `{ unit: true }`
  *
  * @param kind - The struct kind to check
  * @returns true if this is a unit struct
@@ -220,17 +222,17 @@ export interface Enum {
 
 export interface Variant {
   kind: VariantKind;
-  discriminant?: Discriminant;
+  discriminant?: Discriminant | null;
 }
 
 /**
- * Variant kind format changed in version 56+:
+ * Accepted unit-variant representations:
  * - Old: { "plain": true }
  * - New: "plain" (string literal)
  */
 export type VariantKind =
-  | "plain" // Format 56+: string literal for unit variants
-  | { plain: true } // Format 35-55: object for unit variants
+  | "plain" // Rustdoc string literal for unit variants
+  | { plain: true } // Legacy object for unit variants
   | { tuple: (Id | null)[] }
   | { struct: { fields: Id[]; has_stripped_fields: boolean } };
 
@@ -248,7 +250,8 @@ export interface Function {
 
 export interface FunctionSignature {
   inputs: [string, Type][];
-  output?: Type;
+  is_c_variadic?: boolean;
+  output?: Type | null;
 }
 
 export interface FunctionHeader {
@@ -258,11 +261,7 @@ export interface FunctionHeader {
   abi: Abi;
 }
 
-export type Abi =
-  | "Rust"
-  | { C: { unwind: boolean } }
-  | { System: { unwind: boolean } }
-  | { Other: string };
+export type Abi = string | { Other: string } | Record<string, { unwind: boolean }>;
 
 export interface Trait {
   is_auto: boolean;
@@ -283,12 +282,12 @@ export interface Impl {
   is_unsafe: boolean;
   generics: Generics;
   provided_trait_methods: string[];
-  trait?: Path;
+  trait?: Path | null;
   for: Type;
   items: Id[];
   is_negative: boolean;
   is_synthetic: boolean;
-  blanket_impl?: Type;
+  blanket_impl?: Type | null;
 }
 
 export interface TypeAlias {
@@ -308,6 +307,7 @@ export interface ConstExpr {
 }
 
 export interface Static {
+  is_unsafe?: boolean;
   type: Type;
   is_mutable: boolean;
   expr: string;
@@ -325,13 +325,13 @@ export interface Primitive {
 
 export interface AssocConst {
   type: Type;
-  value?: string;
+  value?: string | null;
 }
 
 export interface AssocType {
   generics: Generics;
   bounds: GenericBound[];
-  type?: Type;
+  type?: Type | null;
 }
 
 // Generics
@@ -347,8 +347,8 @@ export interface GenericParamDef {
 
 export type GenericParamDefKind =
   | { lifetime: { outlives: string[] } }
-  | { type: { bounds: GenericBound[]; default?: Type; is_synthetic: boolean } }
-  | { const: { type: Type; default?: string } };
+  | { type: { bounds: GenericBound[]; default?: Type | null; is_synthetic: boolean } }
+  | { const: { type: Type; default?: string | null } };
 
 export type WherePredicate =
   | { bound_predicate: { type: Type; bounds: GenericBound[]; generic_params: GenericParamDef[] } }
@@ -360,7 +360,7 @@ export type GenericBound =
       trait_bound: { trait: Path; generic_params: GenericParamDef[]; modifier: TraitBoundModifier };
     }
   | { outlives: string }
-  | { use: string[] };
+  | { use: (string | { lifetime: string } | { param: string })[] };
 
 export type TraitBoundModifier = "none" | "maybe" | "maybe_const";
 
@@ -378,16 +378,23 @@ export type Type =
   | { impl_trait: GenericBound[] }
   | { infer: true }
   | { raw_pointer: { is_mutable: boolean; type: Type } }
-  | { borrowed_ref: { lifetime?: string; is_mutable: boolean; type: Type } }
-  | { qualified_path: { name: string; args: GenericArgs; self_type: Type; trait?: Path } };
+  | { borrowed_ref: { lifetime?: string | null; is_mutable: boolean; type: Type } }
+  | {
+      qualified_path: {
+        name: string;
+        args?: GenericArgs | null;
+        self_type: Type;
+        trait?: Path | null;
+      };
+    };
 
 export interface Path {
-  /** Display name. Populated by rustdoc format v35-v56 as "name". */
-  name?: string;
+  /** Display name. Named "name" in older format versions. */
+  name?: string | null;
   /** Display name. Populated by rustdoc format v57+ as "path" (rename of "name"). */
   path?: string;
   id: Id;
-  args?: GenericArgs;
+  args?: GenericArgs | null;
 }
 
 /**
@@ -407,7 +414,7 @@ export function getPathName(p: Path): string {
 
 export interface DynTrait {
   traits: PolyTrait[];
-  lifetime?: string;
+  lifetime?: string | null;
 }
 
 export interface PolyTrait {
@@ -422,24 +429,27 @@ export interface FunctionPointer {
 }
 
 export type GenericArgs =
+  | { return_type_notation: true }
   | { angle_bracketed: { args: GenericArg[]; constraints: AssocItemConstraint[] } }
-  | { parenthesized: { inputs: Type[]; output?: Type } };
+  | { parenthesized: { inputs: Type[]; output?: Type | null } };
 
 export type GenericArg =
   | { lifetime: string }
   | { type: Type }
-  | { const: Constant }
+  | { const: ConstArgument }
   | { infer: true };
 
 export interface AssocItemConstraint {
   name: string;
-  args: GenericArgs;
+  args?: GenericArgs | null;
   binding: AssocItemConstraintKind;
 }
 
 export type AssocItemConstraintKind = { equality: Term } | { constraint: GenericBound[] };
 
-export type Term = { type: Type } | { constant: Constant };
+export type ConstArgument = ConstExpr | { const: ConstExpr; type?: Type };
+
+export type Term = { type: Type } | { constant: ConstArgument };
 
 /**
  * Result type for getItemKind that allows graceful handling of unknown types.
@@ -500,7 +510,7 @@ export function getItemKind(inner: ItemInner): ItemKindResult {
   // Note: opaque_ty, foreign_type, and keyword don't have corresponding
   // ItemInner variants in the TypeScript types, but we check for them
   // to provide better forward compatibility warnings
-  const innerKeys = Object.keys(inner as Record<string, unknown>);
+  const innerKeys = Object.keys(inner);
   if (innerKeys.length === 1) {
     const key = innerKeys[0];
     // Map any recognized keys that don't have explicit ItemInner types

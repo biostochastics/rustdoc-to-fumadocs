@@ -342,7 +342,15 @@ describe("formatType", () => {
   describe("impl_trait types", () => {
     it("formats impl Trait with bounds", () => {
       const type: Type = {
-        impl_trait: [{ trait_bound: { trait: { name: "Display", id: "0:8", args: undefined } } }],
+        impl_trait: [
+          {
+            trait_bound: {
+              trait: { name: "Display", id: "0:8", args: undefined },
+              generic_params: [],
+              modifier: "none",
+            },
+          },
+        ],
       };
       expect(formatType(type)).toBe("impl Display");
     });
@@ -350,8 +358,20 @@ describe("formatType", () => {
     it("formats impl with multiple bounds", () => {
       const type: Type = {
         impl_trait: [
-          { trait_bound: { trait: { name: "Debug", id: "0:9", args: undefined } } },
-          { trait_bound: { trait: { name: "Clone", id: "0:10", args: undefined } } },
+          {
+            trait_bound: {
+              trait: { name: "Debug", id: "0:9", args: undefined },
+              generic_params: [],
+              modifier: "none",
+            },
+          },
+          {
+            trait_bound: {
+              trait: { name: "Clone", id: "0:10", args: undefined },
+              generic_params: [],
+              modifier: "none",
+            },
+          },
         ],
       };
       expect(formatType(type)).toBe("impl Debug + Clone");
@@ -571,7 +591,11 @@ describe("formatGenericArg", () => {
 describe("formatGenericBound", () => {
   it("formats trait bound", () => {
     const bound: GenericBound = {
-      trait_bound: { trait: { name: "Clone", id: "0:17", args: undefined } },
+      trait_bound: {
+        trait: { name: "Clone", id: "0:17", args: undefined },
+        generic_params: [],
+        modifier: "none",
+      },
     };
     expect(formatGenericBound(bound)).toBe("Clone");
   });

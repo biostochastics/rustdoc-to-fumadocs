@@ -182,3 +182,19 @@ describe("renderWorkspaceIndex", () => {
     expect(index).toContain("[`alpha`](/api/alpha)");
   });
 });
+
+it("discovers the root package, custom library target and excluded subtree", async () => {
+  await writeFile(
+    join(tmp, "Cargo.toml"),
+    '[package]\nname="umbrella"\nversion="0.1.0"\n[workspace]\nmembers=["libs/*"]\nexclude=["libs/skip*"]\n'
+  );
+  await writeMember(join(tmp, "libs/alpha"), "alpha");
+  await writeFile(
+    join(tmp, "libs/alpha/Cargo.toml"),
+    '[package]\nname="alpha"\nversion="0.1.0"\n[lib]\nname="public_api"\n'
+  );
+  await writeMember(join(tmp, "libs/skip-me"), "skip-me");
+  const ws = await loadWorkspace(join(tmp, "Cargo.toml"));
+  expect(ws.members.map((m) => m.name).sort()).toEqual(["alpha", "umbrella"]);
+  expect(ws.members.find((m) => m.name === "alpha")?.crateName).toBe("public_api");
+});

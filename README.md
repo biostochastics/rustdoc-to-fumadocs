@@ -1,652 +1,164 @@
-<h1 align="center">rustdoc-to-fumadocs</h1>
+# rustdoc-to-fumadocs
 
-<p align="center">
-  <strong>Convert Rust API documentation to beautiful FumaDocs sites</strong><br>
-  <em>Transform rustdoc JSON output into FumaDocs-compatible MDX files with full component support.<br>
-  Verified end-to-end against FumaDocs v16; schema-compatible with v14–v16+.</em>
-</p>
+Generate a browsable Rust API reference for a Fumadocs site. The CLI reads rustdoc JSON and writes MDX pages and sidebar metadata. It follows public re-exports, links types across Cargo workspace members, and renders Rust signatures, members, implementations, feature gates, and safety documentation.
 
-<p align="center">
-  <a href="https://github.com/biostochastics/rustdoc-to-fumadocs/actions/workflows/ci.yml"><img src="https://github.com/biostochastics/rustdoc-to-fumadocs/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI"></a>
-  <a href="https://github.com/biostochastics/rustdoc-to-fumadocs/blob/main/package.json"><img src="https://img.shields.io/github/package-json/v/biostochastics/rustdoc-to-fumadocs?label=version" alt="Version"></a>
-  <a href="https://github.com/biostochastics/rustdoc-to-fumadocs/blob/main/LICENSE"><img src="https://img.shields.io/github/license/biostochastics/rustdoc-to-fumadocs" alt="License"></a>
-  <a href="https://github.com/biostochastics/rustdoc-to-fumadocs/commits/main"><img src="https://img.shields.io/github/last-commit/biostochastics/rustdoc-to-fumadocs" alt="Last commit"></a>
-  <a href="https://github.com/biostochastics/rustdoc-to-fumadocs/pulls?q=is%3Apr+is%3Amerged"><img src="https://img.shields.io/github/issues-pr-closed/biostochastics/rustdoc-to-fumadocs?label=merged%20PRs" alt="Merged PRs"></a>
-</p>
+[![CI](https://github.com/biostochastics/rustdoc-to-fumadocs/actions/workflows/ci.yml/badge.svg)](https://github.com/biostochastics/rustdoc-to-fumadocs/actions/workflows/ci.yml) [![MIT License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-<p align="center">
-  <a href="https://www.typescriptlang.org/"><img src="https://img.shields.io/badge/TypeScript-5.3+-blue" alt="TypeScript: 5.3+"></a>
-  <a href="https://nodejs.org/"><img src="https://img.shields.io/badge/Node.js-20+-green" alt="Node.js: 20+"></a>
-  <a href="https://fumadocs.dev/"><img src="https://img.shields.io/badge/FumaDocs-v14%E2%80%93v16%2B-purple" alt="FumaDocs: v14–v16+"></a>
-  <a href="https://eslint.org/"><img src="https://img.shields.io/badge/ESLint-v9-4B32C3" alt="ESLint: v9"></a>
-  <a href="https://prettier.io/"><img src="https://img.shields.io/badge/code_style-Prettier-ff69b4" alt="Code style: Prettier"></a>
-  <a href="https://vitest.dev/"><img src="https://img.shields.io/badge/tests-Vitest-yellow" alt="Tests: Vitest"></a>
-</p>
+## Quick start
 
----
+Use Node.js 20.19+ on the 20.x line, or 22.12+. Rust is needed to **produce** the input. A machine with Node alone can convert prebuilt JSON. From a checkout of this repository, build and install the CLI locally.
 
-## What is rustdoc-to-fumadocs?
-
-rustdoc-to-fumadocs converts Rust's `rustdoc` JSON output into [FumaDocs](https://fumadocs.dev/)-compatible MDX files. It bridges the gap between Rust's documentation system and modern documentation frameworks, enabling you to integrate Rust API docs into your existing FumaDocs site.
-
-### How It Works
-
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                              RUST PROJECT                                   │
-│                                                                             │
-│   cargo +nightly doc --output-format json                                   │
-│                         │                                                   │
-│                         ▼                                                   │
-│              target/doc/my_crate.json                                       │
-└─────────────────────────────────────────────────────────────────────────────┘
-                          │
-                          ▼
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                         RUSTDOC-TO-FUMADOCS                                 │
-│                                                                             │
-│  ┌─────────────┐    ┌─────────────┐    ┌─────────────┐    ┌─────────────┐  │
-│  │  Validation │ -> │  Generator  │ -> │  Renderer   │ -> │   Output    │  │
-│  │  (Zod)      │    │  (Modules)  │    │ (Components)│    │   (MDX)     │  │
-│  └─────────────┘    └─────────────┘    └─────────────┘    └─────────────┘  │
-│                                                                             │
-│  • Format version check (v35-60)    • FumaDocs Callouts, Tabs, Cards       │
-│  • Helpful error messages           • YAML frontmatter with icons          │
-│  • Forward-compatible parsing       • meta.json navigation                 │
-└─────────────────────────────────────────────────────────────────────────────┘
-                          │
-                          ▼
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                           FUMADOCS SITE                                     │
-│                                                                             │
-│   content/docs/api/                                                         │
-│   ├── meta.json              # Navigation with icons & separators          │
-│   ├── my_module/                                                            │
-│   │   ├── index.mdx          # Module overview                              │
-│   │   ├── MyStruct.mdx       # Struct with implementations                  │
-│   │   ├── MyEnum.mdx         # Enum with variants                           │
-│   │   └── my_function.mdx    # Function documentation                       │
-│   └── ...                                                                   │
-└─────────────────────────────────────────────────────────────────────────────┘
+```sh
+npm ci
+npm pack
+npm install --global ./rustdoc-to-fumadocs-0.5.0.tgz
+rustdoc-to-fumadocs --version
 ```
 
----
+From your Rust project's directory, generate JSON and point the converter at the docs content directory in your site.
 
-## At a Glance
-
-| Feature               | Description                                                                            |
-| --------------------- | -------------------------------------------------------------------------------------- |
-| **FumaDocs v14–v16+** | Full support for icons, separators, Callouts, Tabs, Cards — verified end-to-end on v16 |
-| **Cargo workspaces**  | `--workspace` processes every member into one FumaDocs tree                            |
-| **Complete API**      | `pub use` re-exports followed: items of private modules get pages at their public path |
-| **Linked docs**       | Intra-doc links resolved through rustdoc's link table; every link is absolute          |
-| **Feature gates**     | `#[doc(cfg)]` / `#[cfg]` badges, inherited from modules, with a real `Cargo.toml` line |
-| **Validation**        | Zod schemas with helpful error messages and hints                                      |
-| **Error Handling**    | Structured errors with codes, hints, and recovery context                              |
-| **Components**        | Deprecation, Safety, Panics, Errors, Feature Gate callouts                             |
-| **Navigation**        | auto-generated meta.json with icons and separators                                     |
-| **Flexible Output**   | Group by module, kind, or flat structure                                               |
-| **CI-Friendly**       | Dry-run mode, JSON output, progress indicators                                         |
-| **Security**          | Path traversal prevention, input limits, log-injection guard                           |
-
-### Rustdoc Format Compatibility
-
-| Format Version | Rust Version            | Support                                                   |
-| -------------- | ----------------------- | --------------------------------------------------------- |
-| 35-55          | 1.76 - 1.84             | Full                                                      |
-| 56-57          | 1.85 - 1.94 (57 tested) | Full (numeric IDs, structured attributes)                 |
-| 58-60          | up to 1.98 (60 tested)  | Full (`stability`, `const_stability`, `default_unstable`) |
-| > 60           | Future                  | Warning + best-effort                                     |
-
-The test suite runs every fixture in both format 57 (Rust 1.94) and format 60 (Rust 1.98).
-
----
-
-## Quick Start
-
-### Prerequisites
-
-| Requirement | Version | Notes                       |
-| ----------- | ------- | --------------------------- |
-| **Node.js** | 20+     | 20, 22 or 24                |
-| **Rust**    | nightly | For rustdoc JSON generation |
-| **npm**     | 9+      | Comes with Node.js          |
-
-### Installation
-
-```bash
-# Clone and install
-git clone https://github.com/biostochastics/rustdoc-to-fumadocs.git
-cd rustdoc-to-fumadocs
-npm install
-```
-
-### Generate Documentation
-
-```bash
-# 1. Generate rustdoc JSON from your Rust project
-cd /path/to/your/rust/project
+```sh
 RUSTDOCFLAGS="-Z unstable-options --output-format json" cargo +nightly doc --no-deps
-
-# 2. Convert to FumaDocs MDX
-cd /path/to/rustdoc-to-fumadocs
-npx tsx src/cli.ts --input /path/to/target/doc/my_crate.json --output content/docs/api
-
-# 3. Done! MDX files are ready for FumaDocs
+rustdoc-to-fumadocs --input target/doc/my_crate.json \
+  --output ../my-site/content/docs/api --base-url /docs/api
 ```
 
-### Verify Installation
+The result includes `my_crate/index.mdx`, `my_crate/meta.json`, and public item pages. Mount the same path in your Fumadocs source loader that you pass as the base URL. For stable-toolchain testing, `RUSTC_BOOTSTRAP=1` permits the unstable rustdoc JSON option. [Installation guide](INSTALLATION.md)
 
-```bash
-npm run test:run    # Run the test suite
-npm run build       # Compile TypeScript
+## Compatibility
+
+| Producer or consumer  | Coverage                                                                                                                                                                                                     |
+| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Rust and rustdoc JSON | Accepts formats 27–61. Real inputs exercise Rust 1.76 (27), 1.80 (30), 1.83 (35), 1.86 (39), 1.89 (53), 1.92 (56), 1.94 (57), 1.98 (60), and 1.99–1.100 (61). The November 17, 2026 nightly also emitted 61. |
+| Newer rustdoc formats | The generator warns, checks the shapes it consumes, and renders recognized items. A breaking change to a known shape produces a diagnostic identifying the JSON field.                                       |
+| Fumadocs Core and UI  | Next.js production builds exercise 14.7.7, 15.8.5, and 16.19.4 with real generated pages. The compatibility job also selects the latest npm release.                                                         |
+| Node.js               | The converter requires Node 20.19+ on 20.x or Node 22.12+. CI covers the 20, 22, 24, and 26 release lines. A consuming Next.js or Fumadocs toolchain can require a newer Node release.                       |
+
+The Rust matrix generates fresh JSON on each toolchain and checks the rendered signatures, public aliases, internal links, and MDX in all three layouts. The Fumadocs matrix checks generated routes with the framework's loader and prerenders pages using its components. The latest v16 build uses the native Fumadocs MDX adapter. [Compatibility workflow](.github/workflows/ci.yml)
+
+## CLI
+
+| Option                                          | Behavior                                                                                                                                                                    |
+| ----------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `-i, --input <file>`                            | Read a rustdoc JSON file. A single positional path also works.                                                                                                              |
+| `-c, --crate <name>`                            | Find the crate under the Cargo target directory. With no input option, read the current package manifest.                                                                   |
+| `-w, --workspace [dir]`                         | Generate a workspace reference. Defaults to the current directory.                                                                                                          |
+| `--target-dir <dir>`                            | Override `CARGO_TARGET_DIR` and the discovered Cargo target directory.                                                                                                      |
+| `--exclude <names>`                             | Skip named workspace packages or crate targets. Accepts repeated flags or comma-separated names.                                                                            |
+| `--include-unpublished`                         | Include workspace packages with publishing disabled.                                                                                                                        |
+| `-o, --output <dir>`                            | Output directory. Defaults to `content/docs/api`.                                                                                                                           |
+| `-b, --base-url <path>`                         | Public URL of the output directory. Defaults to `/docs/api`.                                                                                                                |
+| `-g, --group-by <layout>`                       | `module` emits one page per item under its module. `kind` groups items and their implementations on shared pages. `flat` writes qualified names inside one crate directory. |
+| `--no-index`                                    | Suppress module index pages. Links target available pages where possible.                                                                                                   |
+| `--no-tabs`, `--no-cards`                       | Disable implementation tabs or related-item cards.                                                                                                                          |
+| `--source-url-base <url>`, `--source-ref <ref>` | Link source spans and repository-relative documentation. A ref adds the GitHub-style `blob/<ref>` path.                                                                     |
+| `-n, --dry-run`                                 | Print a proposed file list and byte counts.                                                                                                                                 |
+| `--json`                                        | Print a machine-readable **preview**. The command leaves the output directory untouched.                                                                                    |
+| `-v, --verbose`                                 | List files in human-readable output.                                                                                                                                        |
+| `-h, --help`, `-V, --version`                   | Print CLI help or the installed package version.                                                                                                                            |
+
+### Cargo workspaces
+
+```sh
+RUSTDOCFLAGS="-Z unstable-options --output-format json" cargo +nightly doc --workspace --no-deps
+rustdoc-to-fumadocs --workspace . --exclude xtask \
+  --output ../my-site/content/docs/api --base-url /docs/api \
+  --source-url-base https://github.com/example/project --source-ref v1.2.0
 ```
 
----
+Cargo metadata supplies workspace membership, inherited publish settings, target names, and the target directory. A TOML fallback handles explicit members, globs, excludes, root packages, and renamed libraries on hosts with prebuilt JSON. The converter indexes member routes first, then reloads and renders one member at a time. The workspace landing page links to each documented crate. For packages with multiple binary targets, select a specific target with `--input` when needed.
 
-## CLI Reference
+Missing member inputs produce warnings. A preview reports `status: "partial"` and a `workspace.skipped` list when some members were skipped. A run with zero usable members exits with an error. To require complete coverage in CI, check the preview before writing.
 
-```
-USAGE:
-  rustdoc-to-fumadocs [OPTIONS]
-
-OPTIONS:
-  -i, --input <path>      Path to rustdoc JSON file
-  -c, --crate <name>      Crate name (auto-finds target/doc/<name>.json)
-  -w, --workspace [dir]   Treat <dir> (or cwd) as a Cargo workspace root and
-                          generate docs for every [workspace].members entry.
-                          Overrides --input/--crate.
-  --target-dir <dir>      Cargo target directory containing doc/<crate>.json
-                          (default: $CARGO_TARGET_DIR, else ./target or
-                          <workspace>/target)
-  --exclude <crates>      Workspace members to skip (comma-separated or
-                          repeated; package or crate names)
-  --include-unpublished   Also document workspace members with
-                          publish = false (skipped by default)
-  -o, --output <dir>      Output directory (default: content/docs/api)
-  -b, --base-url <url>    Base URL for docs (default: /docs/api); every
-                          generated link is absolute under it
-  --source-url-base <url> Repository URL for "Source" links and for
-                          repository-relative links in docstrings, e.g.
-                          https://github.com/org/repo
-  --source-ref <ref>      Git ref for source links (adds /blob/<ref>/)
-  -g, --group-by <mode>   Group by: module | kind | flat (default: module)
-  --no-index              Skip index pages for modules
-  --no-tabs               Disable Tabs component for implementations
-  --no-cards              Disable Cards component for cross-references
-  -n, --dry-run           Preview output without writing files
-  --json                  JSON output for CI/scripting
-  -v, --verbose           Show verbose output
-  -h, --help              Show help message
+```sh
+rustdoc-to-fumadocs --workspace --json > api-preview.json
+jq -e '.success and .status == "complete"' api-preview.json
+rustdoc-to-fumadocs --workspace --output content/docs/api
 ```
 
-### Examples
+### Regeneration
 
-```bash
-# Basic usage
-rustdoc-to-fumadocs --input target/doc/my_crate.json --output docs/api
+The CLI stages generated files, checks their destinations, and records their hashes in `.rustdoc-to-fumadocs.manifest` in the output directory. Keep that manifest with the generated tree. A complete run removes obsolete pages it previously generated when their contents still match the manifest. Edited obsolete pages and unrelated guides are preserved. Partial workspace runs defer cleanup until a complete run. Files created before 0.5.0 have no ownership record. Start in a fresh output directory when migrating a generated-only tree.
 
-# Auto-detect crate from Cargo.toml
-rustdoc-to-fumadocs --crate my_crate
+Use the CLI for managed disk writes. Normal write errors roll back changes during publication. A lock serializes publication to an output directory. If the process was forcibly terminated, inspect the output and any stage directory before removing an abandoned lock and retrying.
 
-# Preview without writing
-rustdoc-to-fumadocs --crate my_crate --dry-run
+## Fumadocs integration
 
-# JSON output for CI pipelines
-rustdoc-to-fumadocs --crate my_crate --json | jq '.stats'
-
-# Whole Cargo workspace (one output subdir per member crate)
-cargo doc --workspace --no-deps  # with the JSON RUSTDOCFLAGS
-rustdoc-to-fumadocs --workspace --output docs/api
-
-# Shared target dir, skip a member, link items to their source
-CARGO_TARGET_DIR=/tmp/target rustdoc-to-fumadocs --workspace --exclude bench-utils \
-  --source-url-base https://github.com/org/repo --source-ref v1.2.0
-```
-
-Workspace mode skips members with `publish = false` (xtask-style helpers) unless
-`--include-unpublished` is given, prints format-version warnings per member, and
-builds every member's page index first so re-exports of a sibling crate's items
-link to the sibling's page. The top-level `meta.json` lists each crate as a folder.
-
----
-
-## Generated Output
-
-### What Gets Documented
-
-- **Public API by reachability.** Public items of public modules keep their
-  path. Items defined in private modules and re-exported with `pub use` get a
-  page at the re-export path (under the `use` name for renamed re-exports);
-  re-exported private modules and glob re-exports are inlined; `#[doc(inline)]`
-  is honoured. Re-exports of already documented or external items are listed
-  in a **Re-exports** section with a link.
-- **Links.** Intra-doc links (``[`Foo`]``, `[text](crate::Foo)`,
-  `[`Self::new`]`, reference links) resolve through rustdoc's link table to
-  absolute URLs: local pages, member anchors (`#method.new`,
-  `#variant.Name`), sibling workspace crates, or the external crate's
-  rustdoc pages. Links without a public target keep their text.
-- **Traits and impls.** Associated types and constants, required vs provided
-  methods, implementors, every trait impl (including marker impls like `Copy`)
-  and auto traits. Methods get anchored headings, so they show in the table of
-  contents.
-- **Feature gates.** `#[doc(cfg(...))]` (generate with `--cfg docsrs`) or the
-  item's `#[cfg(...)]`, with `all`/`any`/`not`, inherited from enclosing
-  modules; the callout's `Cargo.toml` line names the real package and version.
-- **Attributes.** `#[non_exhaustive]`, `#[must_use]`, `#[repr]`, deprecation and
-  (format 58+) stability; doctest setup lines (`# use foo;`) are hidden.
-
-### FumaDocs Components
-
-| Component   | Usage                                              | Example                                                 |
-| ----------- | -------------------------------------------------- | ------------------------------------------------------- |
-| **Callout** | Deprecation, safety, panics, errors, feature gates | `<Callout type="warn">Deprecated since 1.2.0</Callout>` |
-| **Tabs**    | Organize methods vs trait implementations          | `<Tabs items={["Methods", "Trait Implementations"]}>`   |
-| **Cards**   | Cross-references in "See Also" sections            | `<Card title="OtherStruct" icon="Box" />`               |
-
-### Icon Mapping
-
-| Rust Item  | FumaDocs Icon |
-| ---------- | ------------- |
-| struct     | Box           |
-| enum       | List          |
-| trait      | Puzzle        |
-| function   | Code          |
-| type alias | Type          |
-| constant   | Hash          |
-| macro      | Wand2         |
-| proc macro | Wand2         |
-| module     | Folder        |
-
-### Sample Output
-
-**Frontmatter:**
-
-```yaml
----
-title: "MyStruct"
-description: "A data structure for handling..."
-icon: "Box"
----
-```
-
-**meta.json:**
-
-```json
-{
-  "title": "my_module",
-  "icon": "Folder",
-  "defaultOpen": false,
-  "pages": [
-    "index",
-    "---Structs---",
-    "MyStruct",
-    "---Functions---",
-    "my_function",
-    "---Modules---",
-    "submodule"
-  ]
-}
-```
-
----
-
-## Programmatic API
-
-```typescript
-import { RustdocGenerator, validateRustdocJson } from "rustdoc-to-fumadocs";
-import { readFileSync, writeFileSync, mkdirSync } from "fs";
-import { dirname, join } from "path";
-
-// Load and validate
-const rawJson = JSON.parse(readFileSync("target/doc/my_crate.json", "utf-8"));
-const { crate, warnings } = validateRustdocJson(rawJson);
-
-// Generate
-const generator = new RustdocGenerator(crate, {
-  output: "content/docs/api",
-  baseUrl: "/docs/api",
-  useTabs: true,
-  useCards: true,
-});
-
-const files = generator.generate();
-
-// Write files
-for (const file of files) {
-  const fullPath = join("content/docs/api", file.path);
-  mkdirSync(dirname(fullPath), { recursive: true });
-  writeFileSync(fullPath, file.content);
-}
-
-console.log(`Generated ${files.length} files`);
-```
-
----
-
-## FumaDocs Integration
-
-### Verified Stack (v16)
-
-End-to-end tested on **2026-04-20** with the following versions — all 4 generated pages prerender and render correctly in a Next.js production build:
-
-| Package         | Version |
-| --------------- | ------- |
-| `next`          | 16.2.4  |
-| `react`         | 19.2.5  |
-| `fumadocs-ui`   | 16.8.1  |
-| `fumadocs-core` | 16.8.1  |
-| `fumadocs-mdx`  | 14.3.1  |
-
-The generator's output (frontmatter, `meta.json`, separators, Callout/Tabs/Cards usage) is also schema-compatible with FumaDocs v14 and v15. Consumer setup has changed across major versions — use the import paths that match your installed version.
-
-### mdx-components.tsx
-
-Generated pages use `Callout`, `Cards`, `Card`, `Tabs` and `Tab` without importing them. FumaDocs v16's `defaultMdxComponents` provides `Callout`, `Cards` and `Card`, but **not** `Tabs` / `Tab`; register those yourself (or generate with `--no-tabs`):
+In a Fumadocs Next.js app, register the generated components in the component map passed to your MDX body. A generated page can use `Callout`, `Tabs`, `Tab`, `Cards`, and `Card`. The default MDX components and tab exports are available in the tested v14–v16 installations.
 
 ```tsx
 import defaultMdxComponents from "fumadocs-ui/mdx";
 import { Tab, Tabs } from "fumadocs-ui/components/tabs";
 import type { MDXComponents } from "mdx/types";
 
-export function getMDXComponents(components?: MDXComponents): MDXComponents {
-  return {
-    ...defaultMdxComponents,
-    Tabs,
-    Tab,
-    ...components,
-  };
+export function getMDXComponents(extra: MDXComponents = {}): MDXComponents {
+  return { ...defaultMdxComponents, Tab, Tabs, ...extra };
 }
 ```
 
-Member headings carry FumaDocs custom heading ids (``#### `new` [#method.new]``),
-which the default `remarkHeading` plugin of fumadocs-mdx turns into anchors.
+For the v16 native adapter, include the generated directory in `defineDocs` and feed its source into the loader. Register `createMDX()` from `fumadocs-mdx/next` in the site's Next.js configuration.
 
-### source.config.ts
+```ts
+// source.config.ts
+import { defineConfig, defineDocs } from "fumadocs-mdx/config";
 
-```typescript
-import { defineDocs, defineConfig } from "fumadocs-mdx/config";
-
-export const docs = defineDocs({
-  dir: "content/docs",
-});
-
+export const docs = defineDocs({ dir: "content/docs" });
 export default defineConfig();
 ```
 
-### lib/source.ts (v16)
-
-```typescript
-import { docs } from "@/.source/server"; // v14/v15: '@/.source'
+```ts
+// lib/source.ts
+import { docs } from "@/.source/server";
 import { loader } from "fumadocs-core/source";
 
 export const source = loader({
   baseUrl: "/docs",
   source: docs.toFumadocsSource(),
-  // icon: (name) => lucideIcons[name],  // resolve string icons → components
 });
 ```
 
-> **Note on icons:** the generator emits `icon: "Folder"` / `"Box"` / etc. as strings in frontmatter and `meta.json`. Pass an `icon` resolver to `loader({...})` to map those strings to `lucide-react` components. Without a resolver, sidebar labels render the icon name as literal text (e.g. `BoxMyStruct`).
+Pass an icon resolver to `loader` to map frontmatter and sidebar icon names to React elements. Keep Fumadocs' heading plugin enabled to resolve generated member IDs such as `#method.new`. Fumadocs v14 and v15 expose their Next.js root provider under `fumadocs-ui/provider`. In v16 the Next.js provider is `fumadocs-ui/provider/next`. [Runnable consumer test](scripts/test-fumadocs.sh)
 
-### app/layout.tsx (v16)
+## What gets documented
 
-```tsx
-// v16: provider moved under /provider/next for Next.js
-import { RootProvider } from "fumadocs-ui/provider/next";
-// v14/v15 equivalent: import { RootProvider } from 'fumadocs-ui/provider';
+- Public modules, named and glob re-exports, procedural macros, type aliases, constants, statics, unions, structs, enums, traits, and their documented members.
+- Tuple fields, enum variants, associated types and constants, inherent methods, trait implementations, conditional auto traits, and separate entries for implementors that share a short name.
+- Rust signatures including FFI safety and ABI, variadics, lifetimes, dynamic callables, associated bindings, and generic constraints.
+- Rustdoc Markdown, links, doctests, deprecation, safety requirements, errors, feature availability, and stability metadata where supplied by rustdoc. Inline Rust and doctest fences remain code. Source prose is treated as Markdown data.
+- Intra-doc references use rustdoc's link table. Targets with enough metadata link to an emitted page or member anchor, a sibling crate, or external rustdoc. External member references without a resolvable path can reduce to their label. Blanket impl listings are intentionally limited.
 
-import "fumadocs-ui/style.css"; // self-contained bundle
-// or, with Tailwind v4: @import "fumadocs-ui/css/preset.css" in globals.css
+## Library API
+
+The package exports ESM and TypeScript declarations. The generator returns relative paths and file contents. Validation also returns warnings when a producer uses a newer format.
+
+```ts
+import { readFile } from "node:fs/promises";
+import { RustdocGenerator, validateRustdocJson } from "rustdoc-to-fumadocs";
+
+const input = JSON.parse(await readFile("target/doc/my_crate.json", "utf8"));
+const { crate, warnings } = validateRustdocJson(input);
+const generator = new RustdocGenerator(crate, {
+  output: "content/docs/api",
+  baseUrl: "/docs/api",
+  onWarning: (message) => console.warn(message),
+});
+const files = generator.generate();
 ```
 
-### Import Path Changes at a Glance
-
-| What                   | v14 / v15              | v16                            |
-| ---------------------- | ---------------------- | ------------------------------ |
-| `RootProvider`         | `fumadocs-ui/provider` | `fumadocs-ui/provider/next`    |
-| Generated source       | `@/.source`            | `@/.source/server`             |
-| MDX default components | exported as `/mdx`     | exported as `/mdx` (unchanged) |
-
----
-
-## Generating Rustdoc JSON
-
-Rustdoc JSON requires nightly Rust:
-
-```bash
-# Using nightly (recommended)
-RUSTDOCFLAGS="-Z unstable-options --output-format json" cargo +nightly doc --no-deps
-
-# Using stable with bootstrap (CI environments)
-RUSTC_BOOTSTRAP=1 RUSTDOCFLAGS="-Z unstable-options --output-format json" cargo doc --no-deps
-
-# With feature badges from #[cfg_attr(docsrs, doc(cfg(...)))]
-RUSTC_BOOTSTRAP=1 RUSTDOCFLAGS="-Z unstable-options --output-format json --cfg docsrs" \
-  cargo doc --no-deps --all-features
-```
-
-Output: `target/doc/<crate_name>.json` (or `$CARGO_TARGET_DIR/doc/`). `--cfg docsrs`
-needs the crate to enable `#![cfg_attr(docsrs, feature(doc_cfg))]`; without it the
-generator falls back to the items' own `#[cfg]` attributes.
-
----
-
-## Security
-
-| Protection            | Description                                    |
-| --------------------- | ---------------------------------------------- |
-| **Input Size Limits** | Maximum 100MB prevents memory exhaustion       |
-| **Path Sanitization** | Blocks `..`, `/`, `\`, and invalid characters  |
-| **Output Validation** | Ensures files stay within output directory     |
-| **Recursion Limits**  | Prevents stack overflow on deep modules        |
-| **Warning Limits**    | Prevents console flooding from malformed input |
-
-### Processing Untrusted Input
-
-1. Use `--dry-run` to preview output before writing
-2. Inspect generated paths with `--json` output
-3. Run in a sandboxed environment for untrusted crates
-
----
+Use `pageIndex()` and `setExternalPages()` to connect independently generated crates. `landingUrl()` returns an emitted destination or `null` for an empty indexless crate.
 
 ## Development
 
-```bash
-npm install          # Install dependencies
-npm run build        # Compile TypeScript
-npm run test         # Watch mode
-npm run test:run     # Single run
-npm run test:coverage # Coverage report
-npm run lint         # ESLint
-npm run format       # Prettier
+```sh
+npm ci
+npm run format:check
+npm run lint
+npm run typecheck
+npm run test:coverage
+npm run build
+npm run test:rust
+npm run test:fumadocs -- 16
+npm run test:crates -- itoa serde_core
 ```
 
-### Test Coverage
-
-| Module                 | Coverage |
-| ---------------------- | -------- |
-| validation.ts          | 100%     |
-| renderer/components.ts | 100%     |
-| renderer/types.ts      | 99%      |
-| workspace.ts           | 95%      |
-| **Overall**            | ~62%     |
-
----
-
-## Deploying to FumaDocs
-
-The generated files are **deployment-ready** for FumaDocs v14+ projects (verified end-to-end on v16). Follow this checklist to integrate:
-
-### Deployment Checklist
-
-1. **Generate with dry-run first** to preview output:
-
-   ```bash
-   rustdoc-to-fumadocs --input my_crate.json --output content/docs/api --dry-run
-   ```
-
-2. **Copy generated files** to your FumaDocs content directory:
-
-   ```bash
-   rustdoc-to-fumadocs --input my_crate.json --output content/docs/api
-   ```
-
-3. **Verify required components** are exported in `mdx-components.tsx`:
-
-   ```tsx
-   import { Callout } from "fumadocs-ui/components/callout";
-   import { Tabs, Tab } from "fumadocs-ui/components/tabs";
-   import { Cards, Card } from "fumadocs-ui/components/card";
-   ```
-
-4. **Install Lucide icons** (used in frontmatter):
-
-   ```bash
-   npm install lucide-react
-   ```
-
-   Icons used: `Box`, `List`, `Puzzle`, `Code`, `Type`, `Hash`, `Wand2`, `Folder`
-
-5. **Build and verify**:
-   ```bash
-   npm run build  # Verify MDX compilation
-   npm run dev    # Check navigation and rendering
-   ```
-
-### Post-Generation Review
-
-| Check                | What to Look For                                         |
-| -------------------- | -------------------------------------------------------- |
-| **Navigation**       | Sidebar shows module hierarchy with icons and separators |
-| **Frontmatter**      | Pages have correct titles and descriptions               |
-| **Components**       | Callouts render for deprecations, safety warnings, etc.  |
-| **Cross-references** | "See Also" cards link to related types                   |
-| **Code blocks**      | Rust syntax highlighting works                           |
-
-### CI/CD Integration
-
-```yaml
-# Example GitHub Actions step
-- name: Generate API docs
-  run: |
-    RUSTDOCFLAGS="-Z unstable-options --output-format json" cargo +nightly doc --no-deps
-    npx rustdoc-to-fumadocs --input target/doc/my_crate.json --output content/docs/api --json
-```
-
----
-
-## Known Limitations & Caveats
-
-### Generation Limitations
-
-| Limitation                      | Impact                                        | Workaround                       |
-| ------------------------------- | --------------------------------------------- | -------------------------------- |
-| **Requires nightly Rust**       | Cannot use stable rustdoc                     | Use `RUSTC_BOOTSTRAP=1` in CI    |
-| **Blanket impls filtered**      | Generic impls like `impl<T> From<T>` excluded | Usually desirable; reduces noise |
-| **Max 6 cross-reference cards** | Large types may have incomplete "See Also"    | Acceptable for most use cases    |
-| **Re-exports not rendered**     | `pub use` items don't get separate pages      | Document in parent module        |
-
-### Content Caveats
-
-| Issue                           | Symptom                           | Cause                                         | Resolution                                            |
-| ------------------------------- | --------------------------------- | --------------------------------------------- | ----------------------------------------------------- |
-| **Associated type fallback**    | `<Self as ?>::Err` in signatures  | External trait not in the local `paths` table | Expected for items whose trait lives in another crate |
-| **Simplified async signatures** | Complex lifetimes abbreviated     | Async return types with many lifetime params  | Rarely affects readability                            |
-| **Missing trait impls**         | Some trait implementations absent | Filtered as blanket/synthetic                 | Check if impl is truly needed                         |
-| **Broken intra-doc links**      | Links to external crates fail     | External types not resolved                   | Links redirect to docs.rs                             |
-
-### When to Expect Manual Editing
-
-- **Complex generic bounds**: Deeply nested generics may render with simplified notation
-- **Custom formatting**: If you need different component styles or layouts
-
-### Tested Compatibility
-
-Generated output verified against real-world crates (format v57):
-
-| Crate            | Complexity                             | Files | Status   |
-| ---------------- | -------------------------------------- | ----- | -------- |
-| **syn**          | High (complex generics)                | 148   | ✅ Works |
-| **tokio**        | High (async types)                     | 76    | ✅ Works |
-| **serde_core**   | Medium (trait-heavy)                   | 57    | ✅ Works |
-| **anyhow**       | Low (simple API)                       | 10    | ✅ Works |
-| Cargo workspaces | Multi-crate with `[workspace].members` | —     | ✅ Works |
-
----
-
-## Unsupported Features
-
-The following rustdoc/documentation features are not currently supported:
-
-- Doc aliases (`#[doc(alias = "...")]`)
-- Auto-derive size documentation (`--show-type-sizes`)
-- Item examples from external files
-- Custom rustdoc CSS/themes
-- Fuzzy search index generation
-- Intra-doc links to external crates (redirects to docs.rs instead)
-
----
-
-## Troubleshooting
-
-### Generation Issues
-
-| Issue                         | Solution                                                             |
-| ----------------------------- | -------------------------------------------------------------------- |
-| "Could not find rustdoc JSON" | Run `cargo +nightly doc` with `--output-format json` flag            |
-| "Format version too old"      | Upgrade Rust: `rustup update nightly`                                |
-| "Format version too new"      | Update rustdoc-to-fumadocs; newer formats are accepted with warnings |
-| Missing implementations       | Blanket/synthetic impls are filtered by design                       |
-| `<Self as ?>::Name` in output | The trait's ID wasn't in the local `paths` table (external trait)    |
-
-### FumaDocs Deployment Issues
-
-| Issue                             | Solution                                                                                  |
-| --------------------------------- | ----------------------------------------------------------------------------------------- |
-| Component import errors           | Ensure `mdx-components.tsx` exports `Callout`, `Tabs`, `Tab`, `Cards`, `Card`             |
-| Icons not rendering               | Install `lucide-react` and verify icon names in frontmatter                               |
-| Sidebar missing items             | Check `meta.json` exists in each module directory                                         |
-| MDX compilation fails             | Verify all component imports are correct; check for unescaped special characters          |
-| Navigation separators not showing | Ensure FumaDocs v14+ is installed (separators use `---Name---` format)                    |
-| `defaultOpen` not working         | Requires FumaDocs v14+; check `meta.json` format                                          |
-| `RootProvider` import fails (v16) | On v16, import from `fumadocs-ui/provider/next`, not `fumadocs-ui/provider`               |
-| `@/.source` not found (v16)       | On v16, import from `@/.source/server` for server code, `@/.source/browser` for client    |
-| Sidebar shows `BoxMyStruct` text  | Pass an `icon` resolver to `loader({ icon: (name) => ... })` to map strings to components |
-
-### Validation Errors
-
-| Error Code                   | Meaning                | Fix                                  |
-| ---------------------------- | ---------------------- | ------------------------------------ |
-| `INVALID_JSON`               | File is not valid JSON | Check rustdoc completed successfully |
-| `UNSUPPORTED_FORMAT_VERSION` | Format outside v35-60  | Update Rust or this tool             |
-| `MISSING_ROOT_MODULE`        | Root module not found  | Verify rustdoc output is complete    |
-| `UNRESOLVED_TYPE`            | Type reference missing | External crate type - expected       |
-
----
-
-## Contributing
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup and guidelines.
-
-```bash
-# Development workflow
-git checkout -b feature/my-feature
-npm run test:run && npm run lint
-npm run changeset  # Document your changes
-git commit -m "feat: add my feature"
-```
-
----
-
-## License
-
-**[MIT License](LICENSE)**
-
-Copyright (c) 2026 Biostochastics
-
----
-
-<p align="center">
-  <em>Built for the Rust and FumaDocs communities</em>
-</p>
+The Rust test builds a small local crate. The Fumadocs test installs the selected major in a temporary Next.js project and verifies prerendered HTML. The real-crate test accepts prebuilt JSON via `RUSTDOC_JSON_DIR` or downloads the requested Cargo packages. [Changelog](CHANGELOG.md) · [Contributing](CONTRIBUTING.md) · [Security](SECURITY.md) · [MIT license](LICENSE)

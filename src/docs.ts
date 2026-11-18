@@ -16,49 +16,35 @@
  */
 export type LinkResolution = string | null | undefined;
 
+import { allowedUrl, htmlText, singleHtmlTag, renderHtmlFragment } from "./doc-html.js";
+import { fromMarkdown } from "mdast-util-from-markdown";
+import { toMarkdown, type Options } from "mdast-util-to-markdown";
+import { gfmFromMarkdown, gfmToMarkdown } from "mdast-util-gfm";
+import { gfm } from "micromark-extension-gfm";
+import type { Nodes, Parents, PhrasingContent, Root } from "mdast";
+
+const parseOptions = { extensions: [gfm()], mdastExtensions: [gfmFromMarkdown()] };
+const parse = (source: string): Root => fromMarkdown(source, parseOptions);
+
 /** A function that resolves a link destination (or shortcut label). */
 export type LinkResolver = (key: string) => LinkResolution;
 
-/** Matches the opening line of a fenced code block, capturing the marker. */
-const FENCE_OPEN_RE = /^ {0,3}(`{3,}|~{3,})/;
-
-/**
- * Split Markdown into alternating prose / fenced-code chunks such that
- * `chunks.join("") === md`. Chunks at even indices are prose, odd indices
- * are fenced blocks (including both fence lines).
- */
+/** Split Markdown at code blocks identified by CommonMark, including blocks in lists or quotes. */
 export function splitFences(md: string): string[] {
   const chunks: string[] = [];
-  const lines = md.match(/[^\n]*\n|[^\n]+$/g) ?? [];
-  let prose = "";
-  let code = "";
-  let fence: string | null = null;
-  for (const line of lines) {
-    if (fence === null) {
-      const m = FENCE_OPEN_RE.exec(line);
-      if (m) {
-        fence = m[1];
-        code = line;
-      } else {
-        prose += line;
-      }
-      continue;
-    }
-    code += line;
-    const close = /^ {0,3}(`{3,}|~{3,})[ \t]*\n?$/.exec(line);
-    if (close?.[1].startsWith(fence[0]) && close[1].length >= fence.length) {
-      chunks.push(prose, code);
-      prose = "";
-      code = "";
-      fence = null;
+  let cursor = 0;
+  function walk(node: Nodes): void {
+    if (node.type === "code" && node.position) {
+      const start = node.position.start.offset!;
+      const end = node.position.end.offset!;
+      chunks.push(md.slice(cursor, start), md.slice(start, end));
+      cursor = end;
+    } else if ("children" in node) {
+      node.children.forEach(walk);
     }
   }
-  if (fence !== null) {
-    // Unterminated fence: the rest is code, as in CommonMark.
-    chunks.push(prose, code);
-    prose = "";
-  }
-  chunks.push(prose);
+  walk(parse(md));
+  chunks.push(md.slice(cursor));
   return chunks;
 }
 
@@ -85,70 +71,28 @@ function skipCodeSpan(text: string, i: number): number {
   return i;
 }
 
-/** Index of the `]` matching the `[` at `open`, skipping code spans. */
-function findClosingBracket(text: string, open: number): number {
-  let depth = 0;
-  for (let i = open; i < text.length; i++) {
+/** Pair brackets once per prose chunk so unmatched markup does not repeatedly
+ * scan the entire remaining paragraph. Literal code spans and escapes are skipped. */
+function matchingBrackets(text: string): Map<number, number> {
+  const open: number[] = [];
+  const closed = new Map<number, number>();
+  for (let i = 0; i < text.length; i++) {
     const ch = text[i];
-    if (ch === "\\") {
-      i++;
-      continue;
-    }
-    if (ch === "`") {
+    if (ch === "\\") i++;
+    else if (ch === "`") {
       const end = skipCodeSpan(text, i);
-      if (end > i) {
-        i = end - 1;
-        continue;
-      }
-    }
-    if (ch === "[") depth++;
-    else if (ch === "]") {
-      depth--;
-      if (depth === 0) return i;
-    } else if (ch === "\n" && text[i + 1] === "\n") {
-      return -1; // links never span paragraphs
-    }
+      if (end > i) i = end - 1;
+      else while (text[i + 1] === "`") i++;
+    } else if (ch === "[") open.push(i);
+    else if (ch === "]" && open.length) closed.set(open.pop()!, i);
+    else if (ch === "\n" && text[i + 1] === "\n") open.length = 0;
   }
-  return -1;
+  return closed;
 }
 
-/** Index of the `)` closing the `(` at `open` (balanced), or -1. */
-function findClosingParen(text: string, open: number): number {
-  let depth = 0;
-  for (let i = open; i < text.length; i++) {
-    const ch = text[i];
-    if (ch === "\\") {
-      i++;
-      continue;
-    }
-    if (ch === "(") depth++;
-    else if (ch === ")") {
-      depth--;
-      if (depth === 0) return i;
-    } else if (ch === "\n") {
-      return -1;
-    }
-  }
-  return -1;
+function labelOf(raw: string): string {
+  return raw.slice(1, matchingBrackets(raw).get(0) ?? raw.length);
 }
-
-/** Split `dest "title"` into its destination and the raw title suffix. */
-function splitDestination(inner: string): { dest: string; title: string } {
-  const trimmed = inner.trim();
-  const m = /^(<[^>]*>|\S+)(\s+(?:"[^"]*"|'[^']*'|\([^)]*\)))?$/.exec(trimmed);
-  if (!m) return { dest: trimmed, title: "" };
-  let dest = m[1];
-  if (dest.startsWith("<") && dest.endsWith(">")) dest = dest.slice(1, -1);
-  return { dest, title: m[2] ?? "" };
-}
-
-/**
- * A CommonMark link reference definition: `[label]: dest` with an optional
- * quoted title and nothing else on the line. `[x]: some prose` is a
- * paragraph that starts with a shortcut link, not a definition.
- */
-const DEFINITION_RE =
-  /^ {0,3}\[([^\]]+)\]:[ \t]*(?:<[^>\n]*>|[^\s<]\S*)(?:[ \t]+(?:"[^"\n]*"|'[^'\n]*'|\([^)\n]*\)))?[ \t]*$/gm;
 
 const DISAMBIGUATOR =
   "(?:struct|enum|trait|union|fn|mod|module|type|const|constant|static|macro|method|field|variant|tymethod|derive|attr|prim|primitive|value|tyalias)@";
@@ -176,16 +120,70 @@ export function looksLikeRustPath(label: string): boolean {
  * like Rust paths (`` [`Foo`] ``, `[a::B]`) are unresolved intra-doc links;
  * their brackets are dropped so readers do not see literal `[...]`.
  */
-export function rewriteDocLinks(md: string, resolve: LinkResolver): string {
-  if (!md) return md;
-  // Labels with a reference definition elsewhere in the docstring are real
-  // Markdown references; their shortcut uses stay as written.
-  const defined = new Set<string>();
-  for (const m of md.matchAll(DEFINITION_RE)) defined.add(m[1].toLowerCase());
-  return mapProse(md, (prose) => rewriteProse(prose, resolve, defined));
+export function rewriteDocLinks(
+  md: string,
+  resolve: LinkResolver,
+  preserveFragments = true
+): string {
+  if (!md?.includes("[")) return md;
+  const tree = parse(md);
+  const protectedNodes: Nodes[] = [];
+  const unavailable = new Set<string>();
+  const resolutions = new Map<Nodes, LinkResolution>();
+  const resolveKey = (key: string): LinkResolution => {
+    const url = resolve(key);
+    if (typeof url !== "string") return url;
+    const fragment = /#([^\s`]+)`?$/.exec(key)?.[1];
+    return preserveFragments && fragment && !url.includes("#") ? `${url}#${fragment}` : url;
+  };
+  function collect(n: Nodes): void {
+    if (n.type === "definition" || n.type === "link") {
+      let url = resolveKey(n.url);
+      // A reference to a gated Rust item may have no row in rustdoc's link
+      // table. A code label and a single identifier make its intent clear.
+      if (
+        url === undefined &&
+        (looksLikeRustPath(n.url) ||
+          (n.type === "definition" && n.label?.startsWith("`") && RUST_PATH_RE.test(n.url)))
+      )
+        url = null;
+      resolutions.set(n, url);
+      if (n.type === "definition" && url === null) unavailable.add(n.identifier);
+      protectedNodes.push(n);
+    } else if (["code", "html", "image", "imageReference", "linkReference"].includes(n.type)) {
+      protectedNodes.push(n);
+    } else if ("children" in n) n.children.forEach(collect);
+  }
+  collect(tree);
+  let output = "",
+    cursor = 0;
+  for (const n of protectedNodes) {
+    const start = n.position!.start.offset!,
+      end = n.position!.end.offset!;
+    output += rewriteProse(md.slice(cursor, start), resolveKey);
+    const raw = md.slice(start, end);
+    let value = raw;
+    const r = resolutions.get(n);
+    if (n.type === "definition") {
+      if (r === null) value = "";
+      else if (typeof r === "string")
+        value = `[${n.label ?? n.identifier}]: ${r}${n.title ? " " + JSON.stringify(n.title) : ""}`;
+    } else if (n.type === "link" && r !== undefined) {
+      const label = raw.startsWith("[") ? labelOf(raw) : textOf(n);
+      value =
+        r === null ? label : `[${label}](${r}${n.title ? " " + JSON.stringify(n.title) : ""})`;
+    } else if (n.type === "linkReference" && unavailable.has(n.identifier)) {
+      value = labelOf(raw);
+    }
+    output += value;
+    cursor = end;
+  }
+  return output + rewriteProse(md.slice(cursor), resolveKey);
 }
 
-function rewriteProse(text: string, resolve: LinkResolver, defined: Set<string>): string {
+function rewriteProse(text: string, resolve: LinkResolver): string {
+  if (!text.includes("[")) return text;
+  const brackets = matchingBrackets(text);
   let out = "";
   let i = 0;
   while (i < text.length) {
@@ -209,8 +207,8 @@ function rewriteProse(text: string, resolve: LinkResolver, defined: Set<string>)
       i++;
       continue;
     }
-    const close = findClosingBracket(text, i);
-    if (close === -1) {
+    const close = brackets.get(i);
+    if (close === undefined) {
       out += ch;
       i++;
       continue;
@@ -218,64 +216,28 @@ function rewriteProse(text: string, resolve: LinkResolver, defined: Set<string>)
     const label = text.slice(i + 1, close);
     const next = text[close + 1];
 
-    // Inline link: [label](dest "title")
-    if (next === "(") {
-      const end = findClosingParen(text, close + 1);
-      if (end !== -1) {
-        const raw = text.slice(close + 2, end);
-        const { dest, title } = splitDestination(raw);
-        const r = resolve(dest);
-        const inner = rewriteProse(label, resolve, defined);
-        if (typeof r === "string") out += `[${inner}](${r}${title})`;
-        else if (r === null || (r === undefined && looksLikeRustPath(dest))) out += inner;
-        else out += `[${inner}](${raw})`;
-        i = end + 1;
-        continue;
-      }
-    }
-
     // Reference link: [label][ref] or collapsed [label][]
     if (next === "[") {
       const end = text.indexOf("]", close + 2);
       if (end !== -1 && !text.slice(close + 2, end).includes("\n")) {
         const ref = text.slice(close + 2, end);
         const key = ref === "" ? label : ref;
-        if (defined.has(key.toLowerCase())) {
-          out += text.slice(i, end + 1);
-        } else {
-          const r = resolve(key);
-          if (typeof r === "string") out += `[${label}](${r})`;
-          else if (r === null || looksLikeRustPath(key)) out += label;
-          else out += text.slice(i, end + 1);
-        }
+        const r = resolve(key);
+        if (typeof r === "string") out += `[${label}](${r})`;
+        else if (r === null || looksLikeRustPath(key)) out += label;
+        else out += text.slice(i, end + 1);
         i = end + 1;
         continue;
       }
     }
 
-    // Reference definition: [label]: dest (alone on its line)
-    const lineStart = i === 0 || text[i - 1] === "\n";
-    const eol = text.indexOf("\n", close);
-    const lineEnd = eol === -1 ? text.length : eol;
-    DEFINITION_RE.lastIndex = 0;
-    if (next === ":" && lineStart && DEFINITION_RE.test(text.slice(i, lineEnd))) {
-      const { dest, title } = splitDestination(text.slice(close + 2, lineEnd));
-      const r = resolve(dest);
-      if (typeof r === "string") out += `[${label}]: ${r}${title}`;
-      else if (r === null || (r === undefined && looksLikeRustPath(dest))) out += `[${label}]: #`;
-      else out += text.slice(i, lineEnd);
-      i = lineEnd;
+    const r = resolve(label);
+    if (typeof r === "string") out += `[${label}](${r})`;
+    else if (r === null || looksLikeRustPath(label) || /^`[^`]+`$/.test(label)) out += label;
+    else {
+      out += "[";
+      i++;
       continue;
-    }
-
-    // Shortcut link: [label]
-    if (defined.has(label.toLowerCase())) {
-      out += `[${label}]`;
-    } else {
-      const r = resolve(label);
-      if (typeof r === "string") out += `[${label}](${r})`;
-      else if (r === null || looksLikeRustPath(label) || /^`[^`]+`$/.test(label)) out += label;
-      else out += `[${rewriteProse(label, resolve, defined)}]`;
     }
     i = close + 1;
   }
@@ -288,17 +250,25 @@ function rewriteProse(text: string, resolve: LinkResolver, defined: Set<string>)
  * page's own headings. Headings that would exceed level 6 become bold text.
  */
 export function demoteHeadings(md: string, levels: number): string {
-  if (!md || levels <= 0) return md;
-  return mapProse(md, (prose) =>
-    prose.replace(
-      /^( {0,3})(#{1,6})([ \t]+)(.*)$/gm,
-      (_m, indent: string, hashes: string, sp: string, text: string) => {
-        const depth = hashes.length + levels;
-        const body = text.replace(/[ \t]+#+[ \t]*$/, "");
-        return depth <= 6 ? `${indent}${"#".repeat(depth)}${sp}${body}` : `${indent}**${body}**`;
-      }
-    )
-  );
+  if (!md || levels <= 0 || !/[#=-]/.test(md)) return md;
+  const tree = parse(md);
+  let changed = false;
+  function demote(parent: Parents): void {
+    for (const [i, n] of parent.children.entries()) {
+      if (n.type === "heading") {
+        changed = true;
+        const depth = n.depth + levels;
+        if (depth <= 6) n.depth = depth as typeof n.depth;
+        else
+          parent.children[i] = {
+            type: "paragraph",
+            children: [{ type: "strong", children: n.children }],
+          };
+      } else if ("children" in n) demote(n);
+    }
+  }
+  demote(tree);
+  return changed ? serialize(tree, false) : md;
 }
 
 /**
@@ -311,56 +281,161 @@ export function takeSection(
   md: string | null | undefined,
   name: string
 ): { section: string | undefined; rest: string } {
-  if (!md) return { section: undefined, rest: md ?? "" };
-  const chunks = splitFences(md);
-  const heading = new RegExp(`^ {0,3}(#{1,6})[ \\t]+${name}[ \\t]*#*[ \\t]*$`, "im");
-  // Find the section heading in a prose chunk.
-  let offset = 0;
-  let start = -1;
-  let level = 0;
-  for (let c = 0; c < chunks.length; c++) {
-    if (c % 2 === 0) {
-      const m = heading.exec(chunks[c]);
-      if (m) {
-        start = offset + m.index;
-        level = m[1].length;
-        break;
-      }
-    }
-    offset += chunks[c].length;
-  }
-  if (start === -1) return { section: undefined, rest: md };
-  // Find the next heading of the same or a higher level, outside fences.
-  const newline = md.indexOf("\n", start);
-  const bodyStart = newline < 0 ? md.length : newline + 1;
-  let end = md.length;
-  offset = 0;
-  const next = new RegExp(`^ {0,3}#{1,${level}}[ \\t]+`, "gm");
-  for (let c = 0; c < chunks.length; c++) {
-    const chunkEnd = offset + chunks[c].length;
-    if (c % 2 === 0 && chunkEnd > bodyStart) {
-      next.lastIndex = Math.max(0, bodyStart - offset);
-      const m = next.exec(chunks[c]);
-      if (m) {
-        end = offset + m.index;
-        break;
-      }
-    }
-    offset = chunkEnd;
-  }
-  const section = md.slice(bodyStart, end).trim();
-  const rest = (md.slice(0, start) + md.slice(end)).replace(/\n{3,}/g, "\n\n").trim();
-  return { section, rest };
+  if (!md?.toLowerCase().includes(name.toLowerCase()))
+    return { section: undefined, rest: md ?? "" };
+  const children = parse(md).children;
+  const index = children.findIndex(
+    (n) => n.type === "heading" && textOf(n).toLowerCase() === name.toLowerCase()
+  );
+  const h = children[index];
+  if (h?.type !== "heading") return { section: undefined, rest: md };
+  const next = children.slice(index + 1).find((n) => n.type === "heading" && n.depth <= h.depth);
+  const end = next?.position?.start.offset ?? md.length;
+  const section = md.slice(h.position!.end.offset, end).trim();
+  const before = md.slice(0, h.position!.start.offset).trimEnd();
+  const after = md.slice(end).trimStart();
+  return { section, rest: [before, after].filter(Boolean).join("\n\n") };
 }
 
-/**
- * Plain-text first line of a docstring for frontmatter descriptions and
- * index summaries: link syntax is reduced to its text.
- */
+function textOf(node: Nodes): string {
+  if ("children" in node) return node.children.map(textOf).join("");
+  if (node.type === "html") return htmlText(node.value);
+  if (node.type === "break") return " ";
+  if ("alt" in node) return node.alt ?? "";
+  return "value" in node ? node.value : "";
+}
+
+const serializeOptions: Options = {
+  extensions: [gfmToMarkdown()],
+  bullet: "-",
+  emphasis: "*",
+  fences: true,
+  resourceLink: true,
+  unsafe: [
+    { character: "{", inConstruct: ["phrasing"] },
+    { character: "{", atBreak: true },
+    { character: "<", inConstruct: ["phrasing"] },
+    { character: "<", atBreak: true },
+    { character: "i", after: "mport(?=[ \\t]|$)", atBreak: true },
+    { character: "e", after: "xport(?=[ \\t]|$)", atBreak: true },
+  ],
+};
+
+const rustToken =
+  /^(?:rust|compile_fail|ignore|no_run|should_panic|test_harness|standalone_crate|allow_fail|edition20\d\d|ignore-[\w-]+|E\d{4}|\{[^}]*\})$/;
+/** Normalize doctests and sanitize links and HTML before serializing Markdown. */
+function prepare(node: Parents, normalizeDoctests: boolean, resolve?: LinkResolver): void {
+  const pairs = new Map<Nodes, string>();
+  const opens: { tag: string; node: Nodes; markup: string }[] = [];
+  for (const child of node.children) {
+    if (child.type !== "html") continue;
+    const tag = singleHtmlTag(child.value, resolve);
+    if (!tag) continue;
+    if (!tag.close) opens.push({ ...tag, node: child });
+    else if (opens.at(-1)?.tag === tag.tag) {
+      const start = opens.pop()!;
+      pairs.set(start.node, start.markup);
+      pairs.set(child, tag.markup);
+    } else opens.length = 0;
+  }
+  for (const [i, child] of node.children.entries()) {
+    if (child.type === "link" || child.type === "definition" || child.type === "image") {
+      const target = child.type === "image" ? resolve?.(child.url) : undefined;
+      if (typeof target === "string") child.url = target;
+      if (target === null || !allowedUrl(child.url, child.type === "image")) {
+        if (child.type === "definition") child.url = "#";
+        else node.children[i] = { type: "text", value: textOf(child) };
+        continue;
+      }
+    }
+    if (child.type === "html") {
+      const safeHtml = pairs.get(child) ?? renderHtmlFragment(child.value, resolve);
+      if (safeHtml !== undefined) child.value = safeHtml;
+      else {
+        const literal = { type: "text" as const, value: child.value };
+        const block =
+          node.type === "root" || node.type === "blockquote" || node.type === "listItem";
+        node.children[i] = block ? { type: "paragraph", children: [literal] } : literal;
+      }
+    } else if (child.type === "code" && normalizeDoctests) {
+      const tokens = [child.lang, child.meta]
+        .filter(Boolean)
+        .join(" ")
+        .split(/[\s,]+/)
+        .filter(Boolean);
+      if (tokens.every((token) => rustToken.test(token))) {
+        child.lang = "rust";
+        const directive = tokens.find((t) => t !== "rust" && !t.startsWith("{"));
+        child.meta = directive ? `title="${directive}"` : null;
+        child.value = child.value
+          .split("\n")
+          .filter((line) => !/^\s*#(?:\s|$)/.test(line))
+          .map((line) => line.replace(/^(\s*)##/, "$1#"))
+          .join("\n");
+      }
+    } else if ("children" in child) prepare(child, normalizeDoctests, resolve);
+  }
+}
+
+function serialize(root: Root, normalizeDoctests: boolean, resolve?: LinkResolver): string {
+  prepare(root, normalizeDoctests, resolve);
+  return toMarkdown(root, serializeOptions).trimEnd();
+}
+
+/** Render CommonMark/GFM as passive MDX without interpreting Rust documentation as JSX or JS. */
+export function sanitizeDocstring(raw: string, resolve?: LinkResolver): string {
+  return raw ? serialize(parse(raw), true, resolve) : raw;
+}
+
+/** Render a single complete prose paragraph, keeping links and inline formatting intact. */
+export function summaryMarkdown(md: string | null | undefined): string {
+  if (!md) return "";
+  const root = parse(md);
+  const paragraph = root.children.find((n) => n.type === "paragraph");
+  if (paragraph?.type !== "paragraph") return "";
+  const definitions = new Map(
+    root.children.filter((n) => n.type === "definition").map((n) => [n.identifier, n])
+  );
+  function inline(nodes: PhrasingContent[]): PhrasingContent[] {
+    return nodes.map((n) => {
+      if (n.type === "linkReference") {
+        const def = definitions.get(n.identifier);
+        if (def)
+          return { type: "link", url: def.url, title: def.title, children: inline(n.children) };
+      }
+      if (n.type === "imageReference") {
+        const def = definitions.get(n.identifier);
+        if (def) return { type: "image", url: def.url, title: def.title, alt: n.alt };
+      }
+      if (n.type === "break") return { type: "text", value: " " };
+      if (n.type === "text") n.value = n.value.replace(/\s*\n\s*/g, " ");
+      if ("children" in n) n.children = inline(n.children);
+      return n;
+    });
+  }
+  paragraph.children = inline(paragraph.children);
+  return serialize({ type: "root", children: [paragraph] }, false);
+}
+
+/** Plain text for frontmatter and string props. */
 export function summaryLine(md: string | null | undefined): string {
-  const first = md?.split("\n")[0]?.trim() ?? "";
-  return first
-    .replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1")
-    .replace(/\[([^\]]*)\]\[[^\]]*\]/g, "$1")
-    .replace(/\[(`[^`]+`)\]/g, "$1");
+  if (!md) return "";
+  const node = parse(md).children.find((n) => n.type === "paragraph");
+  if (!node) return "";
+  function plain(node: Nodes): string {
+    if (!("children" in node)) return textOf(node);
+    const parts = node.children.map(plain);
+    for (const [i, child] of node.children.entries()) {
+      if (
+        child.type === "inlineCode" &&
+        parts[i - 1]?.endsWith("[") &&
+        parts[i + 1]?.startsWith("]")
+      ) {
+        parts[i - 1] = parts[i - 1].slice(0, -1);
+        parts[i + 1] = parts[i + 1].slice(1);
+      }
+    }
+    return parts.join("");
+  }
+  return plain(node).replace(/\s+/g, " ").trim();
 }

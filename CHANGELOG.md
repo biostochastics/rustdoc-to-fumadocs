@@ -2,11 +2,37 @@
 
 All notable changes to rustdoc-to-fumadocs will be documented in this file.
 
-The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
+The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Releases use [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## Unreleased
 
-## [0.4.0] - 2026-11-17
+## 0.5.0 - 2026-11-17
+
+### Changed
+
+- This pre-1.0 minor release changes public types, generated routes, and CLI behavior. Nullable TypeScript fields now reflect actual rustdoc output. The exported validation schema uses Zod 4. Source comments are interpreted as Markdown, and literal JSX in a crate comment is rendered as documentation.
+- Flat and grouped layouts now allocate distinct canonical routes and member anchors. Regenerate published trees and update hand-authored links to old flat or grouped paths. Node.js 20.19+ on the 20.x line, or 22.12+ is required.
+- Regeneration stages changes and records ownership in a manifest. Keep the manifest to prune obsolete generated pages on subsequent complete runs. JSON output remains a preview.
+- Workspace generation retains a compact shared route index and renders one member at a time. The machine-readable report includes partial status, member outcomes, warnings, and UTF-8 byte counts.
+
+### Added
+
+- Rustdoc compatibility for legacy formats beginning at 27 (Rust 1.76) and format 61, including current stable Rust 1.100 and the November 17 nightly.
+- Consumer production-build checks for Fumadocs 14, 15, 16, and the latest release, including navigation, anchored headings, MDX components, and a native v16 MDX build.
+- Cargo metadata discovery for root packages, custom library targets, implicit members, and configured target directories. A manifest-based fallback supports offline conversion without Cargo.
+- CLI version output, a programmatic warning callback and a lookup for each crate's reachable landing page.
+
+### Fixed
+
+- Markdown conversion preserves code, multiline summaries, ordinary HTML, literal braces, and reference links. Safety, panic, and error callouts share fence-aware section extraction.
+- FFI signatures preserve safety, ABI and variadics. Trait-object arguments, generic constraints, tuple fields, feature gates, and conditional implementations survive rendering.
+- Public output filters private members, respects custom filters on re-exports, preserves alias metadata and enum-variant links, and distinguishes similarly named trait implementors.
+- Glob traversal terminates on repeated edges. Grouped pages include implementations, collision handling respects filesystem limits and reserved Windows names, and indexless links target emitted pages.
+- File publication rejects symlinked descendant destinations. Repeated conversions clean up obsolete owned pages while preserving independent and edited obsolete files.
+- Updated runtime Markdown, TOML, YAML, and schema dependencies and refreshed the development lockfile.
+- Piped JSON output drains before process exit. Unknown options and malformed input return structured errors. Test fixtures are typechecked, coverage includes the CLI, and real-crate smoke tests now compile generated output.
+
+## 0.4.0 - 2026-11-17
 
 API completeness release: the generated reference now covers the whole public
 API of a crate, links resolve, and every page compiles as MDX without
@@ -86,7 +112,7 @@ post-processing. Verified on the fluxid workspace (rustdoc JSON formats 57 and 6
 
 - 14 unit tests for `sanitizeDocstring` covering plain prose, autolinks, generics, fenced blocks, doctest-directive rewrites, safe-tag preservation, JSX pass-through, and idempotency.
 
-## [0.3.1] - 2026-04-20
+## 0.3.1 - 2026-04-20
 
 ### Added
 
@@ -135,7 +161,7 @@ post-processing. Verified on the fluxid workspace (rustdoc JSON formats 57 and 6
 - **Per-member size cap**: Workspace mode enforces the same `MAX_INPUT_SIZE_BYTES` (100 MB) cap per member as the single-crate path.
 - **Frontmatter safety**: Top-level workspace `index.mdx` frontmatter uses the `yaml` package; markdown inline-code spans escape backticks; member link hrefs are URI-encoded.
 
-## [0.2.0] - 2026-02-04
+## 0.2.0 - 2026-02-04
 
 ### Added
 
@@ -163,7 +189,7 @@ post-processing. Verified on the fluxid workspace (rustdoc JSON formats 57 and 6
 - Frontmatter uses double-quoted YAML strings for safety
 - Default frontmatter now includes `icon` field based on item kind
 
-## [0.1.0] - 2026-02-04
+## 0.1.0 - 2026-02-04
 
 ### Added
 

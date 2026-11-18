@@ -1,3 +1,5 @@
+import { takeSection } from "../docs.js";
+
 /**
  * FumaDocs UI component generators for MDX output.
  *
@@ -420,28 +422,6 @@ export function extractDocSection(
   docs: string | null | undefined,
   sectionName: string
 ): string | undefined {
-  if (!docs) return undefined;
-
-  // Match # Safety, ## Safety, ### Safety, etc. (case-insensitive)
-  const pattern = new RegExp(`^(#{1,6})\\s+${sectionName}\\s*$`, "im");
-  const match = docs.match(pattern);
-
-  if (match?.index === undefined) return undefined;
-
-  const headingLevel = match[1].length;
-  const startIndex = match.index + match[0].length;
-
-  // Find the next heading of equal or higher level
-  const nextHeadingPattern = new RegExp(`^#{1,${headingLevel}}\\s+`, "m");
-  const restOfDoc = docs.slice(startIndex);
-  const nextMatch = restOfDoc.match(nextHeadingPattern);
-
-  let content: string;
-  if (nextMatch?.index !== undefined) {
-    content = restOfDoc.slice(0, nextMatch.index);
-  } else {
-    content = restOfDoc;
-  }
-
-  return content.trim();
+  const { section } = takeSection(docs, sectionName);
+  return section === "" ? undefined : section;
 }

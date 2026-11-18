@@ -13,6 +13,7 @@ import {
   MIN_FORMAT_VERSION,
   MAX_FORMAT_VERSION,
 } from "../../src/validation.js";
+import { RustdocGenerator } from "../../src/generator.js";
 import { RustdocError, ErrorCode, isRustdocError } from "../../src/errors.js";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -276,4 +277,65 @@ describe("isRustdocError", () => {
     expect(isRustdocError(undefined)).toBe(false);
     expect(isRustdocError({})).toBe(false);
   });
+});
+
+describe("normalizing real rustdoc representations", () => {
+  const input = (): { index: Record<string, Record<string, unknown>>; format_version: number } =>
+    JSON.parse(readFileSync(join(fixturesDir, "minimal.json"), "utf8")) as {
+      index: Record<string, Record<string, unknown>>;
+      format_version: number;
+    };
+
+  it("validates known nested payloads with the item and member path", () => {
+    const data = input();
+    data.index["0:0:0"].inner = { module: {} };
+    expect(() => validateRustdocJson(data)).toThrow(/index\.0:0:0\.inner\.module\.items/);
+  });
+
+  it("normalizes unit variants, format-61 stability and return type notation", () => {
+    const data = input();
+    data.format_version = 61;
+    data.index["0:1:0"].inner = "extern_type";
+    data.index["0:1:0"].stability = { feature: "base", level: { stable: { since: "1.99.0" } } };
+    data.index["0:2:0"].inner = {
+      type_alias: {
+        generics: { params: [], where_predicates: [] },
+        type: {
+          qualified_path: {
+            name: "lend",
+            args: "return_type_notation",
+            self_type: "infer",
+            trait: null,
+          },
+        },
+      },
+    };
+    const { crate } = validateRustdocJson(data);
+    expect(crate.index["0:1:0"].inner).toEqual({ foreign_type: true });
+    expect(crate.index["0:1:0"].stability).toMatchObject({ level: "stable", since: "1.99.0" });
+    expect(crate.index["0:2:0"].inner).toMatchObject({
+      type_alias: {
+        type: {
+          qualified_path: {
+            args: { return_type_notation: true },
+            self_type: { infer: true },
+          },
+        },
+      },
+    });
+  });
+});
+
+it("reports a future schema to raw library callers once per generator", () => {
+  const input = JSON.parse(readFileSync(join(fixturesDir, "minimal.json"), "utf8"));
+  input.format_version = MAX_FORMAT_VERSION + 1;
+  const warnings: string[] = [];
+  const generator = new RustdocGenerator(input, {
+    output: "",
+    baseUrl: "/api",
+    onWarning: (warning) => warnings.push(warning),
+  });
+  generator.pageIndex();
+  generator.generate();
+  expect(warnings.filter((w) => w.includes("newer than the latest known version"))).toHaveLength(1);
 });

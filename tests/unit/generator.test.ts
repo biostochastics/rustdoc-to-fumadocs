@@ -37,6 +37,14 @@ describe("sanitizePath", () => {
   });
 
   describe("invalid filesystem characters", () => {
+    it("keeps Windows device names and trailing dots portable", () => {
+      expect(sanitizePath("Aux")).toBe("_Aux");
+      expect(sanitizePath("COM1.port")).toBe("_COM1.port");
+      expect(sanitizePath("lpt¹")).toBe("_lpt¹");
+      expect(sanitizePath("notes. ")).toBe("notes_");
+      expect(sanitizePath("Console")).toBe("Console");
+    });
+
     it("should replace special characters", () => {
       expect(sanitizePath("file<name>")).toBe("file_name_");
       expect(sanitizePath('file"name')).toBe("file_name");
@@ -165,29 +173,29 @@ describe("sanitizeDocstring", () => {
   });
 
   it("escapes `<` before a digit (<40 LOC)", () => {
-    expect(sanitizeDocstring("(<40 LOC each)")).toBe("(&lt;40 LOC each)");
+    expect(sanitizeDocstring("(<40 LOC each)")).toBe("(\\<40 LOC each)");
   });
 
   it("escapes URL autolinks", () => {
     expect(sanitizeDocstring("Spec: <https://example.com/a/b>.")).toBe(
-      "Spec: &lt;https://example.com/a/b&gt;."
+      "Spec: [https://example.com/a/b](https://example.com/a/b)."
     );
   });
 
   it("escapes mailto autolinks", () => {
-    expect(sanitizeDocstring("Write <mailto:x@y.z>.")).toBe("Write &lt;mailto:x@y.z&gt;.");
+    expect(sanitizeDocstring("Write <mailto:x@y.z>.")).toBe("Write [mailto:x@y.z](mailto:x@y.z).");
   });
 
   it("escapes metasyntactic `<word>` placeholders", () => {
     expect(sanitizeDocstring("path `testvectors/<encoding>/basic.json`")).toBe(
       "path `testvectors/<encoding>/basic.json`"
     );
-    expect(sanitizeDocstring("Accepts <encoding> names.")).toBe("Accepts &lt;encoding&gt; names.");
+    expect(sanitizeDocstring("Accepts <encoding> names.")).toBe("Accepts \\<encoding> names.");
   });
 
   it("preserves safe inline HTML tags", () => {
     expect(sanitizeDocstring("use <kbd>Ctrl</kbd>")).toBe("use <kbd>Ctrl</kbd>");
-    expect(sanitizeDocstring("<br>line break")).toBe("<br>line break");
+    expect(sanitizeDocstring("<br>line break")).toBe("<br />line break");
   });
 
   it("escapes Rust-style generics", () => {
@@ -195,14 +203,13 @@ describe("sanitizeDocstring", () => {
       "See `Opaque<T>` and `Sealed<T>`"
     );
     expect(sanitizeDocstring("The Opaque<T> primitive wraps keys.")).toBe(
-      "The Opaque&lt;T&gt; primitive wraps keys."
+      "The Opaque\\<T> primitive wraps keys."
     );
   });
 
-  it("preserves JSX-like components with attributes", () => {
-    // Tab/Tabs are emitted by rustdoc-to-fumadocs; don't corrupt them.
+  it("renders JSX-like documentation as text", () => {
     const src = '<Tab value="API"><code>foo</code></Tab>';
-    expect(sanitizeDocstring(src)).toBe(src);
+    expect(sanitizeDocstring(src)).toBe('\\<Tab value="API"><code>foo</code>\\</Tab>');
   });
 
   it("does not escape content inside fenced code blocks", () => {

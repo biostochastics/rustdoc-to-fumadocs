@@ -11,7 +11,7 @@
 
 ## Checklist
 
-- [ ] I have read the [CONTRIBUTING](CONTRIBUTING.md) guidelines
+- [ ] I have read the [CONTRIBUTING](../CONTRIBUTING.md) guidelines
 - [ ] My code follows the project's style guidelines
 - [ ] I have added tests covering my changes
 - [ ] All new and existing tests pass

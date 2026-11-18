@@ -17,7 +17,15 @@
  */
 
 import { getPathName } from "../types.js";
-import type { Type, GenericArg, GenericArgs, GenericBound, GenericParamDef } from "../types.js";
+import type {
+  Type,
+  GenericArg,
+  GenericArgs,
+  GenericBound,
+  GenericParamDef,
+  Abi,
+  ConstArgument,
+} from "../types.js";
 
 /**
  * Format a Type as a human-readable string.
@@ -31,10 +39,10 @@ import type { Type, GenericArg, GenericArgs, GenericBound, GenericParamDef } fro
  * const typeStr = formatType({ tuple: [{ primitive: "i32" }, { primitive: "bool" }] }); // "(i32, bool)"
  * ```
  */
-export function formatType(type: Type): string {
+export function formatType(type: Type | "infer"): string {
   // rustdoc occasionally emits `null` where a Type is expected (e.g. for a
   // missing const generic default). Guard rather than crash.
-  if (type === null || type === undefined) return "_";
+  if (type === null || type === undefined || type === "infer") return "_";
   if ("resolved_path" in type) {
     const path = type.resolved_path;
     return getPathName(path) + formatGenericArgs(path.args);
@@ -67,12 +75,12 @@ export function formatType(type: Type): string {
     // Lifetimes in rustdoc JSON already include the leading '
     if (ref.lifetime) s += `${ref.lifetime.startsWith("'") ? ref.lifetime : `'${ref.lifetime}`} `;
     if (ref.is_mutable) s += "mut ";
-    s += formatType(ref.type);
+    s += formatPointee(ref.type);
     return s;
   }
   if ("raw_pointer" in type) {
     const ptr = type.raw_pointer;
-    return `*${ptr.is_mutable ? "mut" : "const"} ${formatType(ptr.type)}`;
+    return `*${ptr.is_mutable ? "mut" : "const"} ${formatPointee(ptr.type)}`;
   }
   if ("impl_trait" in type) {
     // Render impl Trait bounds
@@ -90,16 +98,9 @@ export function formatType(type: Type): string {
     if (dyn.traits.length > 0) {
       // Format trait bounds with generic args, preserving any higher-ranked
       // trait bound binders (`for<'a>`).
-      const traits = dyn.traits.map((t) => {
-        let name = formatHrtb(t.generic_params) + getPathName(t.trait);
-        if (t.trait.args && "angle_bracketed" in t.trait.args) {
-          const args = t.trait.args.angle_bracketed.args;
-          if (args.length > 0) {
-            name += `<${args.map((a) => formatGenericArg(a)).join(", ")}>`;
-          }
-        }
-        return name;
-      });
+      const traits = dyn.traits.map(
+        (t) => formatHrtb(t.generic_params) + getPathName(t.trait) + formatGenericArgs(t.trait.args)
+      );
       // Include lifetime if present
       let result = `dyn ${traits.join(" + ")}`;
       if (dyn.lifetime) {
@@ -117,10 +118,12 @@ export function formatType(type: Type): string {
   }
   if ("function_pointer" in type) {
     const fp = type.function_pointer;
-    const params = fp.sig.inputs.map(([, t]) => formatType(t)).join(", ");
+    const params = fp.sig.inputs.map(([, t]) => formatType(t));
+    if (fp.sig.is_c_variadic) params.push("...");
     // Preserve `for<'a>` binders on higher-ranked fn pointers like
     // `for<'a> fn(&'a T) -> &'a U`.
-    let result = `${formatHrtb(fp.generic_params)}fn(${params})`;
+    const abi = formatAbi(fp.header.abi);
+    let result = `${formatHrtb(fp.generic_params)}${fp.header.is_unsafe ? "unsafe " : ""}${abi ? abi + " " : ""}fn(${params.join(", ")})`;
     if (fp.sig.output) {
       result += ` -> ${formatType(fp.sig.output)}`;
     }
@@ -149,8 +152,11 @@ export function formatType(type: Type): string {
  * angle-bracketed args (associated-type equality and bound constraints
  * included), `(A, B) -> C` for the parenthesized `Fn` sugar, "" for none.
  */
-export function formatGenericArgs(args: GenericArgs | undefined | null): string {
+export function formatGenericArgs(
+  args: GenericArgs | "return_type_notation" | undefined | null
+): string {
   if (!args) return "";
+  if (args === "return_type_notation" || "return_type_notation" in args) return "(..)";
   if ("angle_bracketed" in args) {
     const ab = args.angle_bracketed;
     const formatted = [
@@ -160,7 +166,7 @@ export function formatGenericArgs(args: GenericArgs | undefined | null): string 
         if ("equality" in c.binding) {
           const term = c.binding.equality;
           if ("type" in term) return `${name} = ${formatType(term.type)}`;
-          if ("constant" in term) return `${name} = ${term.constant.const?.expr ?? "..."}`;
+          if ("constant" in term) return `${name} = ${formatConstArg(term.constant)}`;
         }
         if ("constraint" in c.binding) {
           const bounds = c.binding.constraint.map((b) => formatGenericBound(b)).filter(Boolean);
@@ -185,7 +191,8 @@ export function formatGenericArgs(args: GenericArgs | undefined | null): string 
  * @param arg - The GenericArg to format
  * @returns Formatted argument string
  */
-export function formatGenericArg(arg: GenericArg): string {
+export function formatGenericArg(arg: GenericArg | "infer"): string {
+  if (arg === "infer") return "_";
   if ("lifetime" in arg) {
     // Lifetimes in rustdoc JSON already include the leading '
     return arg.lifetime.startsWith("'") ? arg.lifetime : `'${arg.lifetime}`;
@@ -194,18 +201,7 @@ export function formatGenericArg(arg: GenericArg): string {
     return formatType(arg.type);
   }
   if ("const" in arg) {
-    // Constant in generic args uses the nested const.expr structure
-    const constVal = arg.const;
-    if ("const" in constVal && constVal.const.expr) {
-      return constVal.const.expr;
-    }
-    // Fallback: try direct expr access for older format versions
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any, @typescript-eslint/no-unsafe-member-access
-    if ((constVal as any).expr) {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any, @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-return
-      return (constVal as any).expr;
-    }
-    return "...";
+    return formatConstArg(arg.const);
   }
   if ("infer" in arg) {
     return "_";
@@ -236,6 +232,12 @@ export function formatGenericBound(bound: GenericBound): string {
     // Lifetimes in rustdoc JSON already include the leading '
     return bound.outlives.startsWith("'") ? bound.outlives : `'${bound.outlives}`;
   }
+  if ("use" in bound) {
+    const params = bound.use.map((p) =>
+      typeof p === "string" ? p : "lifetime" in p ? p.lifetime : p.param
+    );
+    return `use<${params.join(", ")}>`;
+  }
   return "";
 }
 
@@ -254,4 +256,31 @@ function formatHrtb(params: GenericParamDef[] | undefined): string {
     return p.name;
   });
   return `for<${parts.join(", ")}> `;
+}
+
+function formatPointee(t: Type): string {
+  const value = formatType(t);
+  const many =
+    "dyn_trait" in t
+      ? t.dyn_trait.traits.length + Number(Boolean(t.dyn_trait.lifetime)) > 1
+      : "impl_trait" in t && t.impl_trait.length > 1;
+  return many ? `(${value})` : value;
+}
+
+export function formatConstArg(value: ConstArgument): string {
+  return ("const" in value ? value.const.expr : value.expr) || "...";
+}
+
+export function formatAbi(abi: Abi): string {
+  if (abi === "Rust") return "";
+  if (typeof abi === "string") return `extern "${abi}"`;
+  const [variant, data] = Object.entries<string | { unwind: boolean }>(abi)[0];
+  const name =
+    variant === "Other" && typeof data === "string"
+      ? data
+      : variant === "C"
+        ? "C"
+        : variant.toLowerCase();
+  const unwind = typeof data === "object" && data?.unwind ? "-unwind" : "";
+  return `extern "${name}${unwind}"`;
 }

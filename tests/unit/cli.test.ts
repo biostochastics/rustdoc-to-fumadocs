@@ -5,7 +5,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtemp, rm, readdir, readFile, writeFile, chmod } from "node:fs/promises";
+import { mkdtemp, mkdir, rm, readdir, readFile, writeFile, chmod } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve, dirname, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -331,6 +331,24 @@ describe("run() - --crate auto-detection", () => {
     await rm(tmp, { recursive: true, force: true });
   });
 
+  it("discovers a renamed library under Cargo's configured target directory", async () => {
+    await mkdir("src");
+    await mkdir(".cargo");
+    await mkdir("build/doc", { recursive: true });
+    await writeFile("src/lib.rs", "");
+    await writeFile(
+      "Cargo.toml",
+      '[package]\nname="demo-lib"\nversion="0.1.0"\n[lib]\nname="renamed"\n'
+    );
+    await writeFile(".cargo/config.toml", '[build]\ntarget-dir="build"\n');
+    await writeFile("build/doc/renamed.json", await readFile(fixturePath));
+    for (const argv of [[], ["--crate", "renamed"], ["--crate", "demo-lib"]]) {
+      const io = captureStreams();
+      expect(await run([...argv, "--json"], io.streams), io.stderr()).toBe(0);
+      expect(JSON.parse(io.stdout()).crate.name).toBe("test_crate");
+    }
+  });
+
   it("returns 1 with hint when --crate json is missing", async () => {
     const { streams, stderr } = captureStreams();
     const code = await run(["--crate", "does_not_exist"], streams);
@@ -562,6 +580,75 @@ describe("isDirectInvocation", () => {
       expect(isDirectInvocation(target, moduleUrl)).toBe(true);
       expect(isDirectInvocation(join(dir, "other.js"), moduleUrl)).toBe(false);
       expect(isDirectInvocation(undefined, moduleUrl)).toBe(false);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("CLI pipeline and diagnostics", () => {
+  it("flushes a large report to a real pipe", async () => {
+    const { execFile } = await import("node:child_process");
+    const { promisify } = await import("node:util");
+    const dir = await mkdtemp(join(tmpdir(), "rustdoc-pipe-"));
+    try {
+      const data = JSON.parse(await readFile(fixturePath, "utf8"));
+      const items = data.index[data.root].inner.module.items;
+      const prefix = "documented_function_with_a_long_public_name_".repeat(3);
+      for (let i = 0; i < 900; i++) {
+        const id = "function" + i;
+        data.index[id] = { ...data.index["0:2:0"], id, name: prefix + i, docs: null };
+        items.push(id);
+      }
+      const input = join(dir, "crate.json");
+      await writeFile(input, JSON.stringify(data));
+      const { stdout } = await promisify(execFile)(process.execPath, [
+        "--import",
+        "tsx",
+        resolve(__dirname, "../../src/cli.ts"),
+        "--json",
+        "--input",
+        input,
+      ]);
+      const report = JSON.parse(stdout);
+      expect(Buffer.byteLength(stdout)).toBeGreaterThan(128 * 1024);
+      expect(report.files).toHaveLength(report.stats.totalFiles);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+  it("emits machine-readable errors for unknown flags and no input", async () => {
+    for (const args of [["--dryrun", "--json"], ["--json"]]) {
+      const io = captureStreams();
+      expect(await run(args, io.streams)).toBe(1);
+      expect(JSON.parse(io.stdout()).success).toBe(false);
+    }
+  });
+  it("reports the package version", async () => {
+    const io = captureStreams();
+    expect(await run(["--version"], io.streams)).toBe(0);
+    const { version } = JSON.parse(
+      await readFile(resolve(__dirname, "../../package.json"), "utf8")
+    );
+    expect(io.stdout().trim()).toBe(version);
+  });
+  it("reports byte lengths and leaves JSON previews off disk", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "utf8-report-"));
+    try {
+      const io = captureStreams(),
+        target = join(dir, "out");
+      const args = [
+        "--input",
+        resolve(__dirname, "../fixtures/kitchen_sink.v60.json"),
+        "--output",
+        target,
+      ];
+      await run([...args, "--json"], io.streams);
+      const report = JSON.parse(io.stdout());
+      expect(await readdir(dir)).toEqual([]);
+      await run(args, captureStreams().streams);
+      for (const f of report.files)
+        expect((await readFile(join(target, f.path))).length).toBe(f.size);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
