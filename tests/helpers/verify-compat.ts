@@ -16,6 +16,20 @@ export async function verifyCompatibility(path: string): Promise<number> {
       .filter((f) => f.path.endsWith(".mdx"))
       .map((f) => f.content)
       .join("\n");
+    const overview = files.find((file) => file.path === "compat/index.mdx")?.content ?? "";
+    assert.ok(overview.includes("A literal"), "missing crate-level //! documentation");
+    assert.ok(
+      overview.includes("Use this crate to carry a value between calls."),
+      "missing included README"
+    );
+    assert.ok(
+      files.some((file) =>
+        file.content.includes(
+          "```rust\nuse compat::Carrier;\nassert_eq!(Carrier(7).value(), 7);\n```"
+        )
+      ),
+      "missing item doctest"
+    );
     for (const text of [
       'unsafe extern "C" fn(i32) -> i32',
       "dyn Fn(u32) -> bool",

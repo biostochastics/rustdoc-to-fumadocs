@@ -217,6 +217,15 @@ export function attrLines(item: Pick<Item, "attrs">): string[] {
   return lines;
 }
 
+/** Spell rustdoc's effective scope as Rust visibility for an included tuple field. */
+function fieldVisibility(visibility: Item["visibility"]): string {
+  if (visibility === "public") return "pub ";
+  if (visibility === "crate") return "pub(crate) ";
+  if (visibility === "default") return "";
+  const scope = visibility.restricted.path.replace(/^::/, "crate::");
+  return `pub(in ${scope}) `;
+}
+
 /** URL-encode one path segment of a generated page. */
 function encodeSegment(segment: string): string {
   return encodeURIComponent(segment);
@@ -2340,7 +2349,9 @@ export class RustdocGenerator {
     const tupleFields = isTupleStruct(struct.kind)
       ? struct.kind.tuple.map((id) => {
           const field = id != null ? this.getItem(id) : undefined;
-          return field && this.memberIncluded(field) ? "pub " + this.formatFieldType(field) : "_";
+          return field && this.memberIncluded(field)
+            ? fieldVisibility(field.visibility) + this.formatFieldType(field)
+            : "_";
         })
       : undefined;
     sections.push(formatStructSignature(name, struct, tupleFields));

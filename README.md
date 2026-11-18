@@ -25,6 +25,45 @@ rustdoc-to-fumadocs --input target/doc/my_crate.json \
 
 The result includes `my_crate/index.mdx`, `my_crate/meta.json`, and public item pages. Mount the same path in your Fumadocs source loader that you pass as the base URL. For stable-toolchain testing, `RUSTC_BOOTSTRAP=1` permits the unstable rustdoc JSON option. [Installation guide](INSTALLATION.md)
 
+## Write guides and API documentation
+
+With the quick-start paths above and a crate named `my_crate`, you can publish all three kinds of content in one site.
+
+| What you write                           | Where you write it                                                                                   | Where readers see it                                                                       |
+| ---------------------------------------- | ---------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------ |
+| Item explanations and Rust examples      | `///` above a struct, function, or method                                                            | The item's generated page, such as `/docs/api/my_crate/Client`                             |
+| Crate introduction                       | `//!` at the top of `src/lib.rs`, or a README included with `#![doc = include_str!("../README.md")]` | The crate overview at `/docs/api/my_crate` with the default layout                         |
+| Tutorials with your own React components | A hand-written MDX file such as `content/docs/guides/first-request.mdx`                              | A separate page at `/docs/guides/first-request` when the docs loader is mounted at `/docs` |
+
+For example, this `src/lib.rs` includes the crate's README in the overview and puts a runnable example on the `Client` page.
+
+````rust
+#![doc = include_str!("../README.md")]
+
+/// A client for the request queue.
+///
+/// ```
+/// use my_crate::Client;
+/// let client = Client::default();
+/// ```
+#[derive(Default)]
+pub struct Client;
+````
+
+Rustdoc expands `include_str!` when producing the JSON. Keep a hand-written guide alongside the generated `api/` directory. It can link directly to a generated page and use components registered in your site's MDX component map.
+
+```mdx
+---
+title: Your first request
+---
+
+<RequestTip>Reuse the client across requests.</RequestTip>
+
+See the [Client API](/docs/api/my_crate/Client).
+```
+
+Register `RequestTip` in the same component map as the Fumadocs components, or define it in the guide itself. Regenerating `content/docs/api` leaves `content/docs/guides` alone. [Fumadocs setup](#fumadocs-integration) · [Working guide with a custom component](tests/compat/first-request.mdx)
+
 ## Compatibility
 
 | Producer or consumer  | Coverage                                                                                                                                                                                                     |
@@ -145,7 +184,42 @@ const generator = new RustdocGenerator(crate, {
 const files = generator.generate();
 ```
 
-Use `pageIndex()` and `setExternalPages()` to connect independently generated crates. `landingUrl()` returns an emitted destination or `null` for an empty indexless crate.
+Supply a `frontmatter(item, path)` callback to customize item and module page metadata such as titles, descriptions, and icons. Use `pageIndex()` and `setExternalPages()` to connect independently generated crates. `landingUrl()` returns an emitted destination or `null` for an empty indexless crate.
+
+### Document private items
+
+The CLI generates the public reference, even when the input contains private items. For internal documentation, first ask rustdoc to include those items.
+
+```sh
+RUSTDOCFLAGS="-Z unstable-options --output-format json --document-private-items" \
+  cargo +nightly doc --no-deps
+```
+
+Then use the JavaScript or TypeScript library. This example reads the JSON, includes all supported items present in it, and writes the result to a dedicated directory. Run it from the Rust project with the package installed locally.
+
+```js
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
+import { RustdocGenerator, validateRustdocJson } from "rustdoc-to-fumadocs";
+
+const { crate } = validateRustdocJson(
+  JSON.parse(await readFile("target/doc/my_crate.json", "utf8"))
+);
+const output = "../my-site/content/docs/internal-api";
+const generator = new RustdocGenerator(crate, {
+  output,
+  baseUrl: "/docs/internal-api",
+  filter: () => true,
+});
+
+for (const file of generator.generate()) {
+  const dest = join(output, file.path);
+  await mkdir(dirname(dest), { recursive: true });
+  await writeFile(dest, file.content);
+}
+```
+
+A custom `filter(item)` replaces the default public filter. It applies to modules, fields, methods, and re-exports as well as top-level items. For example, `filter: (item) => item.name !== "debug_dump"` also admits private items and skips items with that name. A selected nested item needs a reachable containing module or re-export. The example writes the current files directly. Use a fresh output directory for a clean rebuild.
 
 ## Development
 

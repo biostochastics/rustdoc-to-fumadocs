@@ -63,6 +63,7 @@ pub struct CASE;
 pub trait Marker {}
 pub mod left {
     pub struct Handle;
+    pub struct Scoped(pub(in crate::left) u16);
 }
 pub mod right {
     pub struct Handle;

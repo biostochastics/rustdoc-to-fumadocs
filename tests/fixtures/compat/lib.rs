@@ -1,7 +1,13 @@
 //! See [`Carrier`] and its [`Carrier::value`] method.
 //! A literal {unit}, <br> and a <docs@example.org> address.
+#![doc = include_str!("README.md")]
 
 /// A public tuple field.
+///
+/// ```rust
+/// use compat::Carrier;
+/// assert_eq!(Carrier(7).value(), 7);
+/// ```
 pub struct Carrier<T>(pub T);
 
 impl<T: Clone> Carrier<T> {

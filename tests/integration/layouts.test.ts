@@ -180,6 +180,19 @@ describe.each(FORMATS)("layout and visibility regressions (%s)", (format) => {
     );
   });
 
+  it("includes selected private items and preserves tuple field visibility", () => {
+    const files = fileMap(generate({ filter: (item) => item.name !== "crate_method" }));
+    const page = files.get("layout_cases/Public.mdx")!;
+    expect(page).toContain("private_field");
+    expect(page).toContain("fn private_method()");
+    expect(page).not.toContain("fn crate_method()");
+    expect(files.has("layout_cases/inner/index.mdx")).toBe(true);
+    expect(files.get("layout_cases/Tuple.mdx")).toContain("struct Tuple(pub(crate) u32, pub u64);");
+    expect(files.get("layout_cases/left/Scoped.mdx")).toContain(
+      "struct Scoped(pub(in crate::left) u16);"
+    );
+  });
+
   it("preserves conditional impls, member features and distinct implementors", () => {
     const files = fileMap(generate());
     const generic = files.get("layout_cases/Generic.mdx")!;

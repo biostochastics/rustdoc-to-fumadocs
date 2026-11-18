@@ -19,7 +19,9 @@ else
   if [[ "$next" == 16 ]]; then deps+=(fumadocs-mdx@latest); fi
   npm install --prefix "$site" --no-audit --no-fund "${deps[@]}"
 fi
-node "$repo/dist/cli.js" --input "$repo/tests/fixtures/kitchen_sink.v60.json" --output "$site/content"
+mkdir -p "$site/content/guides"
+cp "$repo/tests/compat/first-request.mdx" "$site/content/guides/first-request.mdx"
+node "$repo/dist/cli.js" --input "$repo/tests/fixtures/kitchen_sink.v60.json" --output "$site/content/api"
 cp "$repo/tests/compat/fumadocs.mjs" "$site/verify.mjs"
 cd "$site"
 node verify.mjs

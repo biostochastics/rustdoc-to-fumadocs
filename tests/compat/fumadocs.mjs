@@ -13,6 +13,12 @@ if (process.argv.includes("--check")) {
   assert.ok(html.includes('id="method.new"'), "missing method anchor in prerendered HTML");
   assert.ok(html.includes("Trait Implementations"), "missing trait tab");
   assert.ok(html.includes("Deprecated"), "missing deprecation callout");
+  const guide = await readFile("out/docs/guides/first-request.html", "utf8");
+  assert.ok(guide.includes('data-guide-tip="true"'), "missing custom guide component");
+  assert.ok(
+    guide.includes('href="/docs/api/kitchen_sink/Widget#method.new"'),
+    "missing guide link to the generated method"
+  );
   console.log("Verified prerendered Fumadocs", ui);
 } else {
   const entries = await readdir("content", { recursive: true });
@@ -43,7 +49,7 @@ if (process.argv.includes("--check")) {
     imports.push("import " + name + ' from "./' + name + '.js";');
     pages.push([path, name]);
   }
-  const source = loader({ baseUrl: "/docs/api", source: { files } });
+  const source = loader({ baseUrl: "/docs", source: { files } });
   assert.equal(source.getPages().length, pages.length);
   assert.ok(source.pageTree.children.length);
   const map = new Map(
@@ -58,7 +64,7 @@ if (process.argv.includes("--check")) {
     "generated/routes.js",
     imports.join("\n") + "\nexport const routes={" + routes.join(",") + "};"
   );
-  await mkdir("app/docs/api/[...slug]", { recursive: true });
+  await mkdir("app/docs/[...slug]", { recursive: true });
   const provider =
     Number(ui.split(".")[0]) >= 16 ? "fumadocs-ui/provider/next" : "fumadocs-ui/provider";
   await writeFile(
@@ -68,8 +74,8 @@ if (process.argv.includes("--check")) {
       '";export default function Layout({children}){return <html lang="en"><body><RootProvider>{children}</RootProvider></body></html>}'
   );
   await writeFile(
-    "app/docs/api/[...slug]/page.jsx",
-    `import { routes } from "../../../../generated/routes";
+    "app/docs/[...slug]/page.jsx",
+    `import { routes } from "../../../generated/routes";
 import { Callout } from "fumadocs-ui/components/callout";
 import { Cards, Card } from "fumadocs-ui/components/card";
 import { Tabs, Tab } from "fumadocs-ui/components/tabs";
@@ -87,12 +93,12 @@ export default async function Page({params}){const p=await params;const Body=rou
       'import {createMDX} from "fumadocs-mdx/next";export default createMDX()({output:"export",experimental:{cpus:1}});'
     );
     await writeFile(
-      "app/docs/api/[...slug]/page.jsx",
+      "app/docs/[...slug]/page.jsx",
       `import {loader} from "fumadocs-core/source";
-import {docs} from "../../../../.source/server";
+import {docs} from "../../../.source/server";
 import components from "fumadocs-ui/mdx";
 import {Tab,Tabs} from "fumadocs-ui/components/tabs";
-const source=loader({baseUrl:"/docs/api",source:docs.toFumadocsSource()});
+const source=loader({baseUrl:"/docs",source:docs.toFumadocsSource()});
 export function generateStaticParams(){return source.getPages().map(page=>({slug:page.slugs}))}
 export default async function Page({params}){const page=source.getPage((await params).slug);const Body=page.data.body;return <Body components={{...components,Tab,Tabs}}/>}`
     );
