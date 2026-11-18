@@ -144,6 +144,44 @@ export function inlineCode(text: string): string {
   return `${fence}${pad}${text}${pad}${fence}`;
 }
 
+/**
+ * Attributes that are part of an item's API, as Rust source lines for the
+ * top of its signature block: `#[non_exhaustive]`, `#[must_use]` (with
+ * its reason) and `#[repr(..)]`. Handles the string attributes of older
+ * format versions and the structured ones of format 56+.
+ */
+export function attrLines(item: Pick<Item, "attrs">): string[] {
+  const lines: string[] = [];
+  const known = /^#\[(non_exhaustive|must_use|repr)\b/;
+  for (const attr of item.attrs) {
+    if (typeof attr === "string") {
+      const text = attr.startsWith("#[") ? attr : `#[${attr}]`;
+      if (known.test(text)) lines.push(text);
+      continue;
+    }
+    if ("must_use" in attr) {
+      const reason = (attr.must_use as { reason?: string | null } | null)?.reason;
+      lines.push(reason ? `#[must_use = ${JSON.stringify(reason)}]` : "#[must_use]");
+    } else if ("repr" in attr) {
+      const r = attr.repr as {
+        kind?: string;
+        align?: number | null;
+        packed?: number | null;
+        int?: string | null;
+      };
+      const parts: string[] = [];
+      if (r.kind && r.kind !== "rust") parts.push(r.kind === "c" ? "C" : r.kind);
+      if (r.int) parts.push(r.int);
+      if (r.align != null) parts.push(`align(${r.align})`);
+      if (r.packed != null) parts.push(r.packed === 1 ? "packed" : `packed(${r.packed})`);
+      if (parts.length > 0) lines.push(`#[repr(${parts.join(", ")})]`);
+    } else if ("other" in attr && typeof attr.other === "string" && known.test(attr.other)) {
+      lines.push(attr.other);
+    }
+  }
+  return lines;
+}
+
 /** URL-encode one path segment of a generated page. */
 function encodeSegment(segment: string): string {
   return encodeURIComponent(segment);
@@ -302,6 +340,7 @@ import {
   renderCards,
   renderSafetyCallout,
   renderCfgCallout,
+  renderDeprecation,
   renderPanicsCallout,
   renderErrorsCallout,
   type CardData,
@@ -1180,6 +1219,45 @@ export class RustdocGenerator {
     }
   }
 
+  /**
+   * One member (method, associated type or constant) of a trait or impl:
+   * anchored heading, deprecation, signature with its attributes, source
+   * link and docs.
+   */
+  private pushMember(sections: string[], member: Item, anchor: string | undefined): void {
+    sections.push(this.memberHeading(member.name ?? "", anchor));
+    sections.push("");
+    const deprecation = this.renderDeprecationOf(member);
+    if (deprecation) {
+      sections.push(deprecation);
+      sections.push("");
+    }
+    sections.push("```rust");
+    sections.push(...attrLines(member));
+    sections.push(this.formatMemberSignature(member));
+    sections.push("```");
+    this.pushSource(sections, member);
+    this.pushDocs(sections, member, 4);
+    sections.push("");
+  }
+
+  /** A deprecation callout (escaped title, MDX-safe note), or "". */
+  private renderDeprecationOf(item: Item): string {
+    if (!item.deprecation) return "";
+    const note = item.deprecation.note ? sanitizeDocstring(item.deprecation.note) : undefined;
+    return renderDeprecation(item.deprecation.since ?? undefined, note);
+  }
+
+  /** `[Source](...)` after a signature, when a source URL base is set. */
+  private pushSource(sections: string[], item: Item): void {
+    const span = item.span;
+    if (!span) return;
+    const url = this.sourceUrl(span.filename, [span.begin[0], span.end[0]]);
+    if (!url) return;
+    sections.push("");
+    sections.push(`[Source](${url})`);
+  }
+
   /** `` #### `name` [#anchor] `` — a member heading with a stable id. */
   private memberHeading(label: string, anchor: string | undefined): string {
     return `#### ${inlineCode(label)}${anchor ? ` [#${anchor}]` : ""}`;
@@ -1342,6 +1420,13 @@ export class RustdocGenerator {
     const docs = this.docsFor(node.item, 1);
     if (docs) {
       sections.push(docs);
+      sections.push("");
+    }
+
+    const source: string[] = [];
+    this.pushSource(source, node.item);
+    if (source.length > 0) {
+      sections.push(...source.slice(1));
       sections.push("");
     }
 
@@ -1831,13 +1916,20 @@ export class RustdocGenerator {
     const kind = getItemKind(item.inner);
     const sections: string[] = [];
 
-    // Deprecation warning using FumaDocs Callout component
-    if (item.deprecation) {
-      const sinceText = item.deprecation.since ? ` since ${item.deprecation.since}` : "";
-      const noteText = item.deprecation.note ?? "This item is deprecated.";
-      sections.push(
-        `<Callout type="warn" title="Deprecated${sinceText}">\n${noteText}\n</Callout>`
-      );
+    // Deprecation warning: the title goes through JSON escaping and the note
+    // through docstring sanitization, so quotes or `<T>` cannot break MDX.
+    const deprecation = this.renderDeprecationOf(item);
+    if (deprecation) {
+      sections.push(deprecation);
+      sections.push("");
+    }
+
+    // Stability (format 58+, staged_api crates such as std).
+    if (item.stability?.level === "unstable") {
+      const feature = item.stability.feature
+        ? ` (feature ${inlineCode(item.stability.feature)})`
+        : "";
+      sections.push(`**Unstable**${feature}`);
       sections.push("");
     }
 
@@ -1957,8 +2049,10 @@ export class RustdocGenerator {
     sections.push(`## \`${name}\``);
     sections.push("");
     sections.push("```rust");
+    sections.push(...attrLines(item));
     sections.push(formatFunctionSignature(name, fn));
     sections.push("```");
+    this.pushSource(sections, item);
 
     this.pushDocs(sections, item, 2, this.calloutSections(item));
 
@@ -1997,8 +2091,10 @@ export class RustdocGenerator {
     sections.push(`## \`${name}\``);
     sections.push("");
     sections.push("```rust");
+    sections.push(...attrLines(item));
     sections.push(formatStructSignature(name, struct));
     sections.push("```");
+    this.pushSource(sections, item);
 
     this.pushDocs(sections, item, 2, this.calloutSections(item));
 
@@ -2049,8 +2145,10 @@ export class RustdocGenerator {
     sections.push(`## \`${name}\``);
     sections.push("");
     sections.push("```rust");
+    sections.push(...attrLines(item));
     sections.push(formatUnionSignature(name, union));
     sections.push("```");
+    this.pushSource(sections, item);
 
     this.pushDocs(sections, item, 2, this.calloutSections(item));
 
@@ -2109,8 +2207,10 @@ export class RustdocGenerator {
     sections.push(`## \`${name}\``);
     sections.push("");
     sections.push("```rust");
+    sections.push(...attrLines(item));
     sections.push(formatEnumSignature(name, enumDef));
     sections.push("```");
+    this.pushSource(sections, item);
 
     this.pushDocs(sections, item, 2, this.calloutSections(item));
 
@@ -2260,8 +2360,10 @@ export class RustdocGenerator {
     sections.push(`## \`${name}\``);
     sections.push("");
     sections.push("```rust");
+    sections.push(...attrLines(item));
     sections.push(formatTraitSignature(name, trait));
     sections.push("```");
+    this.pushSource(sections, item);
 
     this.pushDocs(sections, item, 2, this.calloutSections(item));
 
@@ -2287,13 +2389,7 @@ export class RustdocGenerator {
       sections.push(`### ${title}`);
       sections.push("");
       for (const member of group) {
-        sections.push(this.memberHeading(member.name ?? "", anchors.get(String(member.id))));
-        sections.push("");
-        sections.push("```rust");
-        sections.push(this.formatMemberSignature(member));
-        sections.push("```");
-        this.pushDocs(sections, member, 4);
-        sections.push("");
+        this.pushMember(sections, member, anchors.get(String(member.id)));
       }
     }
 
@@ -2390,6 +2486,7 @@ export class RustdocGenerator {
     sections.push("```rust");
     sections.push(`type ${name}${formatGenerics(alias.generics)} = ${formatType(alias.type)};`);
     sections.push("```");
+    this.pushSource(sections, item);
 
     this.pushDocs(sections, item, 2, this.calloutSections(item));
 
@@ -2436,6 +2533,7 @@ export class RustdocGenerator {
       const value = constExpr.value ?? constExpr.expr;
       sections.push(`const ${name}: ${typeName} = ${value};`);
       sections.push("```");
+      this.pushSource(sections, item);
     } else if ("static" in item.inner) {
       const staticDef = item.inner.static;
       const typeName = formatType(staticDef.type);
@@ -2445,6 +2543,7 @@ export class RustdocGenerator {
         `static ${staticDef.is_mutable ? "mut " : ""}${name}: ${typeName} = ${staticDef.expr};`
       );
       sections.push("```");
+      this.pushSource(sections, item);
     }
 
     this.pushDocs(sections, item, 2, this.calloutSections(item));
@@ -2598,13 +2697,7 @@ export class RustdocGenerator {
       }
       if (implDef.trait && !("function" in member.inner)) continue;
 
-      sections.push(this.memberHeading(member.name ?? "", anchor));
-      sections.push("");
-      sections.push("```rust");
-      sections.push(this.formatMemberSignature(member));
-      sections.push("```");
-      this.pushDocs(sections, member, 4);
-      sections.push("");
+      this.pushMember(sections, member, anchor);
     }
 
     return sections.join("\n");
