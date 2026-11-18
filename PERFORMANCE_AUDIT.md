@@ -2,6 +2,69 @@
 
 November 17, 2026 · rustdoc-to-fumadocs 0.5.0 and 0.5.1
 
+## Further opportunities after `e521a8c`
+
+For CI that requires every workspace member, the largest measured saving came from checking completeness in the same invocation that publishes. For full conversions, split CLI packaging helped small inputs most. For library consumers, the biggest memory saving came from releasing each large rendered page after consuming it. The figures below are isolated experiments against `e521a8c`. Each median comes from five fresh Node 22.17.1 processes per input and variant after one warm-up, with shuffled run order on an Apple M4 Pro and warm local APFS. [Timing, RSS and input fingerprints](benchmarks/further-opportunities.json)
+
+| Opportunity                                    | Workload and measurement                                                    |   Current | Prototype |
+| ---------------------------------------------- | --------------------------------------------------------------------------- | --------: | --------: |
+| Require a complete workspace in one invocation | Six crates, documented CI preview followed by fresh publication             |  1,982 ms |  1,028 ms |
+| List planned file paths                        | Six crates, CLI preview                                                     |    955 ms |    364 ms |
+| List planned file paths                        | `syn`, CLI preview peak RSS                                                 |   217 MiB |   140 MiB |
+| Bundle the CLI with lazy-loaded chunks         | Minimal crate, full JSON preview                                            |    114 ms |     67 ms |
+| Bundle the CLI with lazy-loaded chunks         | `syn`, full JSON preview                                                    |    548 ms |    496 ms |
+| Serialize short default frontmatter directly   | 32,000 undocumented functions, library render and digest                    |    353 ms |    147 ms |
+| Deliver one rendered file at a time            | 2,048 generated macros, live heap after consuming all pages                 |  47.5 MiB |  31.6 MiB |
+| Skip empty per-item caches                     | 32,000 undocumented functions, live heap with generator and output retained | 108.7 MiB |  93.3 MiB |
+
+**Workspace and preview options.** The CLI already knows which members it skipped before it opens an output transaction. An opt-in `--require-complete` could return a nonzero status at that point and report the skipped members. A complete run could publish immediately. The prototype produced identical pages and manifest hashes on the six-crate workspace. With one member missing, it left a new destination absent and preserved every file in an existing destination. The timing compares the two Node commands in the documented CI workflow with one strict publication. [Workspace preparation](src/cli.ts) · [Current CI example](README.md#cargo-workspaces)
+
+A separate `--list-files` or library path iterator would serve callers that only need the output filenames. The probe kept input validation, workspace discovery, both workspace passes, digest checks, layout and path allocation. It skipped member-anchor indexing and page content generation. On `syn` it took 198 ms versus 548 ms for the full preview. The existing `--json` and `--dry-run` need the full renderer for accurate byte counts and render-time diagnostics. A path-only result should advertise its narrower contract and include module indexes, aliases, kind pages and sidebar metadata in publication order. [File traversal](src/generator.ts) · [Preview reporting](src/cli.ts)
+
+**Full conversion.** A split ESM bundle reduced full preview time on `smallvec` from 178 to 135 ms and on `serde_core` from 362 to 321 ms. Help stayed around 25–26 ms. The ten CLI chunks totaled 1,010,337 bytes before compression. Shipping these alongside the current library distribution would add package weight. Rebuild the bundle on dependency updates and retain the library declarations and lazy CLI imports. The bundled and ordinary CLIs produced identical files, manifests and warnings on fresh and unchanged six-crate runs on Node 20, 22, 24 and 26. [Package entry points](package.json) · [CLI entry](src/cli.ts)
+
+The frontmatter prototype handled the default title, description and icon when all three were short strings from a restricted ASCII alphabet. The YAML library handled long lines, custom frontmatter and other characters. Rendering and hashing 4,000 one-sentence functions fell from 87 to 44 ms. On `syn` it took 344 ms with the current serializer and 343 ms with the prototype. Across 30,066 additional comparisons, short and long strings, whitespace, quotes, controls and Unicode all matched the current serializer. This change has the clearest payoff for large generated APIs with one page per item. [Frontmatter serialization](src/generator.ts)
+
+**Memory and resource controls.** A synchronous file consumer produced the same ordered output digest as `generate()`. With 15.6 MiB of generated macro pages, peak process RSS fell from 183 to 169 MiB. On `syn`, retained heap fell by only 0.7 MiB and peak RSS stayed around 207 MiB. An iterator alongside `generate()` would let library callers choose when to write or discard each file. Wiring it into the CLI would require bounded writer batches, cleanup after errors or early termination, and preserving the all-members-before-commit guarantee. The measurement covers synchronous consumption in memory. A grouped kind page would still be rendered as one string. [Generation](src/generator.ts) · [Writer staging](src/output.ts)
+
+For leaf items, the renderer can skip creating empty anchor maps, caching empty summaries and collecting callouts for undocumented functions. On the 32,000-function workload, peak RSS fell from 265 to 254 MiB and render plus digest from 353 to 334 ms. On `syn` retained heap stayed around 31 MiB. This is an internal change with no new tuning option. [Member indexing and callouts](src/generator.ts)
+
+The workspace cache offers a different tradeoff. Increasing its input-byte budget from 4 to 12 MiB moved six-crate preview time from 955 to 872 ms and peak RSS from 281 to 238 MiB. On 32 copies of `smallvec`, preview fell from 1,067 to 1,000 ms while peak RSS **rose** from 207 to 211 MiB. Disabling the cache slowed both workloads. An explicit workspace cache budget would give callers control over reuse between passes. Its unit is raw input bytes, and the second-pass digest check still applies. These results support an opt-in setting. They give limited guidance for choosing a universal default. [Workspace cache](src/cli.ts)
+
+**Lower priorities.** A lazy set of linkable struct field names reduced a loop resolving 4,096 distinct field fragments on one generated struct from 92.7 to 3.3 ms. The six real crates made zero such lookups in their default layouts. Consider it for binding generators that produce large, cross-linked records. A separate Markdown tree-copy experiment saved 11 ms on a 548 ms `syn` preview and 3 ms on a 362 ms `serde_core` preview. It shared source positions between copies, which would need an immutability guarantee. Both changes rank below the options above for the real-crate corpus. [Fragment resolution](src/generator.ts) · [Parser cache](src/docs.ts)
+
+### Verification and replay of the opportunity probes
+
+Across 12 repository fixtures and six real crates, the six output-preserving renderer variants matched all ordered page paths, contents and warnings in 108 configurations comprising 2,480 files per variant. The path-only variant matched the ordered filename lists across those same configurations. The library timings include hashing each ordered path and its content after input validation. Retained heap was measured after forced GC with the generator and any returned file array still live. Peak RSS measures the whole process. The sample data records each observation separately. [Measurements and checks](benchmarks/further-opportunities.json)
+
+To replay an experiment, build revision `e521a8c` and apply the probe patch to isolated copies of its compiled output. The patch also creates a library measurement driver. Run the following from the repository root with an absolute rustdoc JSON path in `input`. [Isolated prototype changes](benchmarks/further-opportunities.patch)
+
+```sh
+npm run build
+probe_dir=$(mktemp -d)
+cp package.json "$probe_dir/"
+ln -s "$PWD/node_modules" "$probe_dir/node_modules"
+for variant in base paths cache0 cache12 strict yaml lean lazy tree field
+do
+  cp -R dist "$probe_dir/$variant"
+done
+patch -s -d "$probe_dir" -p1 < benchmarks/further-opportunities.patch
+node "$probe_dir/base/cli.js" --input "$input" --json
+node "$probe_dir/paths/cli.js" --input "$input" --json
+node --expose-gc "$probe_dir/measure-library.mjs" render base "$input"
+node --expose-gc "$probe_dir/measure-library.mjs" render lean "$input"
+```
+
+The paths probe records placeholder content so the existing reporter can carry filenames. Compare its `files[].path` only. For the bundle, esbuild 0.27.2 needs a CommonJS require shim for bundled dependencies. Use the existing benchmark runner with `--cli "$probe_dir/split/cli.js"` to measure it. [CLI benchmark runner](scripts/benchmark-converter.py)
+
+```sh
+node_modules/.bin/esbuild src/cli.ts --bundle --splitting --minify \
+  --platform=node --target=node20.19 --format=esm --outdir="$probe_dir/split" \
+  '--banner:js=import {createRequire as bundleRequire} from "node:module";const require=bundleRequire(import.meta.url);'
+```
+
+The synthetic function inputs extend the file-count recipe below to 32,000 entries. The macro fixture uses 2,048 public `macro_rules!` items, each with 320 arms and no docs. The field lookup fixture retains `TestStruct` from `minimal.json`, clones its public field as `column_1` through `column_N`, and registers each ID in the struct. Run the library driver with `fields` in place of `render` for that fixture. The 32-member workspace uses renamed copies of `smallvec` as described below.
+
 ## Follow-up to 0.5.1
 
 The comparison starts at 0.5.1 (`959b856`), which already includes the Markdown cache, suffix cursors and batched destination checks. Each cell shows median wall time in milliseconds, from that release to this change. Runs used Node 22.17.1 on an Apple M4 Pro with a warm APFS cache. Each command started a fresh process. Build and input order varied over five measured rounds after one warm-up. [Timing and peak RSS samples](benchmarks/post-0.5.1.json)

@@ -1,0 +1,496 @@
+{
+  "revision": "e521a8c212879ea8db60b5c3e9e6be0430548d34",
+  "platform": "Apple M4 Pro, 24 GiB, macOS 26.6.2, APFS, Node 22.17.1",
+  "build": "npm run build; split CLI built with esbuild 0.27.2",
+  "sampling": "Fresh Node processes. One warm-up round and five measured rounds per variant and input. Sequential runs in seeded shuffled order within each of the two experiments. Local filesystem cache warm. Measurements include no Rust or MDX compilation.",
+  "metrics": {
+    "wall_ms": "Elapsed wall time of whole command, or sum of preview and publication in the two-command strict CI comparison. Excludes jq and shell overhead.",
+    "peak_rss_mib": "Process high-water mark from wait4.",
+    "render_consume_ms": "For library measurements, render plus SHA-256 consumption of ordered file paths and contents, after validation and a forced GC.",
+    "lookup_ms": "Elapsed field-fragment lookup loop after validation and route indexing. Includes checking and hashing every returned URL.",
+    "live_heap_mib": "heapUsed after forced GC with generator and any returned array still live."
+  },
+  "checks": {
+    "configs": 108,
+    "ordered_files": 2480,
+    "baseline_real_field_fragments": 0,
+    "strict_partial": "failed before opening fresh and existing outputs",
+    "bundle_compared_files_including_manifest": {
+      "v22.17.1": 397,
+      "v24.22.2": 397,
+      "v20.20.2": 397,
+      "v26.13.1": 397
+    },
+    "bundle_chunks": 10,
+    "bundle_bytes": 1010337,
+    "aggregate_gzip_bytes": 259456,
+    "frontmatter_differential_comparisons": 30066
+  },
+  "input_sha256": {
+    "bitflags.json": "46518fb1290eda448617b5ed6377c07050c9ce46a4586c0f5eefacc4eb10e366",
+    "compat.v27.json": "71d9624ff358c7039d30b71db485b8ae65a765f968b2f330d3844b531666a627",
+    "compat.v35.json": "5ca5c0a92ffc0bdebecd2a9733e9799da29297cd9dfa7ca42661f8df04cf9316",
+    "compat.v61.json": "71b27161fbe9eb3a19ff31b165bae2ac7594e0bd80f30a1e6d9fefa9105a8261",
+    "documented4000.json": "d4347eba9e421543cda6a265f9b018d60c2eb4fd6f355776508790fcf6fa4687",
+    "either.json": "cea0fc5ddf45fedda7167866e2bdba0c1f1b8c2b03a277c8029dd567265ebdce",
+    "fields2048.json": "2c0135be887a12835e652a2a8389fa0b7bbe0c2b8a7ae2743408a38f811c5d45",
+    "fields4096.json": "04ef4dfb3458517c9d8cb6ebe1165135a861f1178e6304fa818f98b3c31680aa",
+    "fields512.json": "af4c451a5c0ebaa66da439e20e58634699a927237dc5c634dbc521f2c5530714",
+    "itoa.json": "eedfbf6ed3285dddb8239f8ceae4bc19435b88805dab8568fd1c6cbd3409da1d",
+    "kitchen_derive.v57.json": "3df104f2d3132e1fe89c2b41614a60933e9a912b9c889d0f32fb9c7cfbb009b2",
+    "kitchen_derive.v60.json": "6a6feb7ad84730c2ef53fd68837a689488878a10e56f39745873575dc87eb243",
+    "kitchen_sink.v57.json": "361e6fc7329eb3072fff4b8561fb200e0d3f0b79da2a670a8ca66cd7fab9bd22",
+    "kitchen_sink.v60.json": "986c57969d08fe68a9f5534e78baf4f6b66fb5d9c46e2dbc44e8fd4357fffb07",
+    "layout_cases.v57.json": "f8f67f8d81851ccdfc9a4425fcbc5d7e116124c2094aea7572aeded10cce1952",
+    "layout_cases.v60.json": "a94bda204ff35c21595f528c3990e4982e3dc7365e137605116373b61c4176d7",
+    "macros.json": "9c69b72b48205db218f585d45fb7a96407fa93bd8111cb5f79b19d47677f0c29",
+    "minimal.json": "7aefadf239ed3f8cf57991c47e4b3a5b61743836bd7f6bba3b2d13aec370b57f",
+    "reexport.v57.json": "2771b4d3402d53f3e091294a6ea7eb0daca5effeba0d1a550d2b2f796f781578",
+    "reexport.v60.json": "db6a0876703f0f7ee71d3c9466210a0b3825345cacd5c2177860c322e968f25e",
+    "serde_core.json": "7de9f3a86f2576a358826ac12252ef2163f3d4a44c77d0890dddf08df2afc38b",
+    "smallvec.json": "889a5f157fcf3c33950cb72a1bd0a61aaaf432b09ebeb2a0b330a9e1c7b558ba",
+    "syn.json": "25aaf19f4aec619270fd055dd67f54df24fe32dff48fb799d6e342b1231b1998",
+    "wide32000.json": "ad26a9dd009fa3caf43f044a6acb4e290a6118340490361fb60562fc7cdcd6e1",
+    "wide4000.json": "ec13dfe2ee9629ce630c378320e42554deb45ab7e53ba862db594ccc37700ef9"
+  },
+  "series": [
+    {
+      "experiment": "cli-help",
+      "input": "help",
+      "variant": "baseline",
+      "wall_ms": [27.173, 26.524, 25.429, 25.929, 25.852],
+      "peak_rss_mib": [42.031, 42.125, 41.938, 42.0, 42.0]
+    },
+    {
+      "experiment": "cli-help",
+      "input": "help",
+      "variant": "split-bundle",
+      "wall_ms": [25.164, 25.076, 24.933, 25.83, 26.134],
+      "peak_rss_mib": [41.391, 41.453, 41.297, 41.266, 41.234]
+    },
+    {
+      "experiment": "cli-preview",
+      "input": "32-smallvec-members",
+      "variant": "baseline",
+      "wall_ms": [1066.397, 1073.479, 1075.78, 1064.716, 1067.115],
+      "peak_rss_mib": [213.078, 212.875, 205.641, 206.062, 206.75]
+    },
+    {
+      "experiment": "cli-preview",
+      "input": "32-smallvec-members",
+      "variant": "workspace-cache-0-MiB",
+      "wall_ms": [1126.93, 1130.305, 1134.82, 1124.568, 1125.731],
+      "peak_rss_mib": [225.734, 230.062, 206.016, 224.688, 202.0]
+    },
+    {
+      "experiment": "cli-preview",
+      "input": "32-smallvec-members",
+      "variant": "workspace-cache-12-MiB",
+      "wall_ms": [999.975, 997.692, 998.443, 1001.624, 1013.897],
+      "peak_rss_mib": [210.766, 212.156, 210.812, 210.828, 214.281]
+    },
+    {
+      "experiment": "cli-preview",
+      "input": "4000-functions",
+      "variant": "baseline",
+      "wall_ms": [219.251, 217.501, 219.813, 218.511, 217.522],
+      "peak_rss_mib": [125.25, 125.234, 125.5, 126.344, 124.953]
+    },
+    {
+      "experiment": "cli-preview",
+      "input": "4000-functions",
+      "variant": "paths-only",
+      "wall_ms": [146.539, 152.98, 148.877, 147.752, 152.379],
+      "peak_rss_mib": [114.781, 114.328, 117.328, 117.422, 117.391]
+    },
+    {
+      "experiment": "cli-preview",
+      "input": "4000-functions",
+      "variant": "split-bundle",
+      "wall_ms": [175.89, 179.087, 179.059, 177.372, 177.668],
+      "peak_rss_mib": [113.0, 117.656, 116.938, 113.594, 113.891]
+    },
+    {
+      "experiment": "cli-preview",
+      "input": "minimal",
+      "variant": "baseline",
+      "wall_ms": [113.633, 115.593, 115.299, 114.076, 113.989],
+      "peak_rss_mib": [74.953, 75.359, 74.688, 74.969, 74.547]
+    },
+    {
+      "experiment": "cli-preview",
+      "input": "minimal",
+      "variant": "paths-only",
+      "wall_ms": [104.146, 104.967, 104.452, 105.215, 103.865],
+      "peak_rss_mib": [72.094, 72.5, 72.891, 71.953, 72.078]
+    },
+    {
+      "experiment": "cli-preview",
+      "input": "minimal",
+      "variant": "split-bundle",
+      "wall_ms": [66.57, 67.129, 66.666, 68.751, 68.456],
+      "peak_rss_mib": [61.844, 61.094, 61.219, 61.391, 61.484]
+    },
+    {
+      "experiment": "cli-preview",
+      "input": "serde_core",
+      "variant": "baseline",
+      "wall_ms": [361.602, 372.164, 361.54, 362.47, 360.718],
+      "peak_rss_mib": [143.516, 142.688, 147.094, 148.172, 149.0]
+    },
+    {
+      "experiment": "cli-preview",
+      "input": "serde_core",
+      "variant": "paths-only",
+      "wall_ms": [169.267, 174.728, 169.678, 169.327, 171.372],
+      "peak_rss_mib": [120.531, 120.484, 120.641, 120.984, 124.375]
+    },
+    {
+      "experiment": "cli-preview",
+      "input": "serde_core",
+      "variant": "shallow-node-clone",
+      "wall_ms": [358.342, 360.679, 362.092, 354.951, 353.288],
+      "peak_rss_mib": [149.203, 147.672, 147.531, 144.578, 143.188]
+    },
+    {
+      "experiment": "cli-preview",
+      "input": "serde_core",
+      "variant": "split-bundle",
+      "wall_ms": [320.206, 323.576, 320.24, 323.365, 321.311],
+      "peak_rss_mib": [148.281, 148.406, 147.328, 148.328, 148.266]
+    },
+    {
+      "experiment": "cli-preview",
+      "input": "six-crate-workspace",
+      "variant": "baseline",
+      "wall_ms": [947.698, 961.509, 955.41, 954.705, 963.028],
+      "peak_rss_mib": [280.859, 280.609, 281.047, 279.844, 280.656]
+    },
+    {
+      "experiment": "cli-preview",
+      "input": "six-crate-workspace",
+      "variant": "paths-only",
+      "wall_ms": [364.013, 363.739, 363.922, 369.209, 369.898],
+      "peak_rss_mib": [210.688, 210.953, 210.453, 210.891, 211.109]
+    },
+    {
+      "experiment": "cli-preview",
+      "input": "six-crate-workspace",
+      "variant": "split-bundle",
+      "wall_ms": [911.481, 918.552, 916.076, 921.412, 936.879],
+      "peak_rss_mib": [296.406, 295.906, 295.859, 291.203, 295.734]
+    },
+    {
+      "experiment": "cli-preview",
+      "input": "six-crate-workspace",
+      "variant": "workspace-cache-0-MiB",
+      "wall_ms": [967.701, 963.714, 976.973, 972.795, 963.01],
+      "peak_rss_mib": [290.141, 289.0, 291.422, 292.516, 289.859]
+    },
+    {
+      "experiment": "cli-preview",
+      "input": "six-crate-workspace",
+      "variant": "workspace-cache-12-MiB",
+      "wall_ms": [877.878, 862.937, 873.205, 872.371, 871.975],
+      "peak_rss_mib": [238.688, 235.156, 238.688, 238.406, 237.703]
+    },
+    {
+      "experiment": "cli-preview",
+      "input": "smallvec",
+      "variant": "baseline",
+      "wall_ms": [176.997, 180.311, 177.767, 178.647, 176.725],
+      "peak_rss_mib": [109.734, 108.203, 108.531, 109.359, 107.891]
+    },
+    {
+      "experiment": "cli-preview",
+      "input": "smallvec",
+      "variant": "split-bundle",
+      "wall_ms": [134.2, 140.174, 135.285, 134.406, 134.594],
+      "peak_rss_mib": [86.719, 87.078, 86.688, 87.031, 87.234]
+    },
+    {
+      "experiment": "cli-preview",
+      "input": "syn",
+      "variant": "baseline",
+      "wall_ms": [548.047, 554.807, 543.433, 552.887, 542.897],
+      "peak_rss_mib": [217.141, 219.875, 217.938, 216.938, 199.906]
+    },
+    {
+      "experiment": "cli-preview",
+      "input": "syn",
+      "variant": "paths-only",
+      "wall_ms": [203.023, 194.457, 197.927, 201.548, 195.793],
+      "peak_rss_mib": [138.062, 139.969, 140.531, 136.594, 140.516]
+    },
+    {
+      "experiment": "cli-preview",
+      "input": "syn",
+      "variant": "shallow-node-clone",
+      "wall_ms": [537.892, 546.571, 536.132, 534.752, 537.362],
+      "peak_rss_mib": [218.094, 202.297, 216.406, 203.078, 218.359]
+    },
+    {
+      "experiment": "cli-preview",
+      "input": "syn",
+      "variant": "split-bundle",
+      "wall_ms": [495.907, 496.592, 497.146, 486.804, 490.994],
+      "peak_rss_mib": [215.594, 215.391, 215.234, 216.312, 214.938]
+    },
+    {
+      "experiment": "field-fragments",
+      "input": "fields2048",
+      "variant": "baseline",
+      "count": 2048,
+      "wall_ms": [145.873, 146.534, 148.314, 148.494, 146.065],
+      "peak_rss_mib": [84.656, 82.734, 84.188, 85.25, 84.562],
+      "lookup_ms": [26.914, 26.613, 26.655, 26.488, 27.435]
+    },
+    {
+      "experiment": "field-fragments",
+      "input": "fields2048",
+      "variant": "field-name-index",
+      "count": 2048,
+      "wall_ms": [121.665, 121.262, 120.535, 122.161, 122.641],
+      "peak_rss_mib": [82.328, 84.562, 83.922, 84.156, 84.594],
+      "lookup_ms": [1.679, 1.596, 1.754, 1.608, 2.863]
+    },
+    {
+      "experiment": "field-fragments",
+      "input": "fields4096",
+      "variant": "baseline",
+      "count": 4096,
+      "wall_ms": [223.239, 223.96, 220.19, 221.787, 220.721],
+      "peak_rss_mib": [92.297, 92.406, 92.953, 93.0, 92.203],
+      "lookup_ms": [92.707, 93.375, 91.46, 95.061, 90.432]
+    },
+    {
+      "experiment": "field-fragments",
+      "input": "fields4096",
+      "variant": "field-name-index",
+      "count": 4096,
+      "wall_ms": [134.195, 129.8, 129.158, 132.073, 128.022],
+      "peak_rss_mib": [91.922, 92.047, 92.625, 92.156, 92.969],
+      "lookup_ms": [3.135, 3.404, 3.274, 3.145, 3.508]
+    },
+    {
+      "experiment": "field-fragments",
+      "input": "fields512",
+      "variant": "baseline",
+      "count": 512,
+      "wall_ms": [118.825, 117.304, 118.949, 115.452, 115.811],
+      "peak_rss_mib": [76.625, 80.109, 76.328, 79.531, 79.422],
+      "lookup_ms": [2.481, 2.544, 2.59, 2.53, 2.583]
+    },
+    {
+      "experiment": "field-fragments",
+      "input": "fields512",
+      "variant": "field-name-index",
+      "count": 512,
+      "wall_ms": [113.111, 115.824, 113.305, 115.684, 115.571],
+      "peak_rss_mib": [79.391, 76.047, 79.969, 75.641, 76.328],
+      "lookup_ms": [0.608, 0.639, 0.578, 0.689, 0.599]
+    },
+    {
+      "experiment": "library-consumer",
+      "input": "2048-macros",
+      "variant": "baseline",
+      "count": 2050,
+      "bytes": 16405223,
+      "wall_ms": [206.445, 208.187, 203.817, 207.709, 208.957],
+      "peak_rss_mib": [182.484, 183.172, 182.234, 183.625, 182.781],
+      "render_consume_ms": [57.193, 56.873, 57.352, 59.382, 59.494],
+      "live_heap_mib": [47.508, 47.509, 47.511, 47.51, 47.51]
+    },
+    {
+      "experiment": "library-consumer",
+      "input": "2048-macros",
+      "variant": "file-consumer",
+      "count": 2050,
+      "bytes": 16405223,
+      "wall_ms": [200.917, 199.328, 204.412, 203.822, 202.791],
+      "peak_rss_mib": [178.062, 168.672, 168.562, 169.297, 178.281],
+      "render_consume_ms": [55.231, 55.748, 55.827, 57.054, 56.409],
+      "live_heap_mib": [31.571, 31.57, 31.571, 31.57, 31.57]
+    },
+    {
+      "experiment": "library-consumer",
+      "input": "4000-functions",
+      "variant": "baseline",
+      "count": 4002,
+      "bytes": 868536,
+      "wall_ms": [238.695, 238.681, 242.31, 233.495, 237.298],
+      "peak_rss_mib": [123.203, 123.25, 122.344, 123.906, 124.531],
+      "render_consume_ms": [76.628, 77.215, 77.896, 76.17, 76.146],
+      "live_heap_mib": [25.236, 25.232, 25.238, 25.236, 25.245]
+    },
+    {
+      "experiment": "library-consumer",
+      "input": "4000-functions",
+      "variant": "file-consumer",
+      "count": 4002,
+      "bytes": 868536,
+      "wall_ms": [242.871, 244.44, 238.658, 244.48, 241.08],
+      "peak_rss_mib": [124.688, 122.047, 122.344, 125.344, 124.625],
+      "render_consume_ms": [76.565, 76.489, 75.882, 77.179, 75.763],
+      "live_heap_mib": [23.844, 23.85, 23.855, 23.848, 23.85]
+    },
+    {
+      "experiment": "library-consumer",
+      "input": "syn",
+      "variant": "baseline",
+      "count": 282,
+      "bytes": 468661,
+      "wall_ms": [556.661, 560.156, 575.404, 569.694, 563.544],
+      "peak_rss_mib": [207.062, 206.422, 207.906, 207.516, 207.516],
+      "render_consume_ms": [342.413, 346.926, 349.767, 349.224, 348.964],
+      "live_heap_mib": [31.05, 31.051, 31.055, 31.055, 31.058]
+    },
+    {
+      "experiment": "library-consumer",
+      "input": "syn",
+      "variant": "file-consumer",
+      "count": 282,
+      "bytes": 468661,
+      "wall_ms": [564.688, 561.477, 569.853, 557.108, 564.932],
+      "peak_rss_mib": [206.0, 206.984, 207.781, 205.625, 207.812],
+      "render_consume_ms": [343.638, 344.768, 346.547, 344.442, 344.397],
+      "live_heap_mib": [30.378, 30.375, 30.374, 30.378, 30.374]
+    },
+    {
+      "experiment": "library-render",
+      "input": "32000-functions",
+      "variant": "baseline",
+      "count": 32002,
+      "bytes": 7154536,
+      "wall_ms": [667.851, 660.447, 689.607, 686.113, 664.442],
+      "peak_rss_mib": [263.609, 264.328, 312.469, 279.078, 264.891],
+      "render_consume_ms": [352.952, 352.774, 365.373, 365.646, 350.487],
+      "live_heap_mib": [108.672, 108.668, 108.662, 108.673, 108.657]
+    },
+    {
+      "experiment": "library-render",
+      "input": "32000-functions",
+      "variant": "short-default-frontmatter",
+      "count": 32002,
+      "bytes": 7154536,
+      "wall_ms": [466.826, 473.82, 459.867, 454.423, 452.539],
+      "peak_rss_mib": [262.234, 282.516, 262.594, 263.453, 261.5],
+      "render_consume_ms": [152.698, 156.533, 145.931, 146.741, 145.623],
+      "live_heap_mib": [108.264, 108.273, 108.281, 108.275, 108.253]
+    },
+    {
+      "experiment": "library-render",
+      "input": "32000-functions",
+      "variant": "skip-empty-caches",
+      "count": 32002,
+      "bytes": 7154536,
+      "wall_ms": [649.32, 637.277, 666.144, 648.287, 672.316],
+      "peak_rss_mib": [252.797, 253.781, 311.25, 253.781, 298.016],
+      "render_consume_ms": [334.31, 331.554, 344.485, 334.312, 347.673],
+      "live_heap_mib": [93.276, 93.277, 93.285, 93.264, 93.281]
+    },
+    {
+      "experiment": "library-render",
+      "input": "4000-documented-functions",
+      "variant": "baseline",
+      "count": 4002,
+      "bytes": 1086325,
+      "wall_ms": [250.752, 246.257, 255.251, 247.124, 249.977],
+      "peak_rss_mib": [126.406, 125.297, 125.875, 126.219, 124.875],
+      "render_consume_ms": [87.072, 86.633, 86.779, 87.125, 86.867],
+      "live_heap_mib": [26.742, 26.751, 26.775, 26.748, 26.752]
+    },
+    {
+      "experiment": "library-render",
+      "input": "4000-documented-functions",
+      "variant": "short-default-frontmatter",
+      "count": 4002,
+      "bytes": 1086325,
+      "wall_ms": [211.292, 209.846, 207.021, 203.326, 212.75],
+      "peak_rss_mib": [125.141, 123.375, 126.047, 124.656, 126.406],
+      "render_consume_ms": [44.662, 43.283, 45.007, 43.53, 44.368],
+      "live_heap_mib": [26.347, 26.34, 26.327, 26.336, 26.324]
+    },
+    {
+      "experiment": "library-render",
+      "input": "4000-functions",
+      "variant": "baseline",
+      "count": 4002,
+      "bytes": 868536,
+      "wall_ms": [236.052, 239.454, 238.944, 235.932, 239.359],
+      "peak_rss_mib": [122.344, 125.109, 123.578, 125.047, 122.344],
+      "render_consume_ms": [77.052, 76.732, 75.494, 77.004, 78.145],
+      "live_heap_mib": [25.242, 25.241, 25.248, 25.247, 25.234]
+    },
+    {
+      "experiment": "library-render",
+      "input": "4000-functions",
+      "variant": "short-default-frontmatter",
+      "count": 4002,
+      "bytes": 868536,
+      "wall_ms": [203.389, 198.294, 200.395, 197.849, 199.157],
+      "peak_rss_mib": [123.0, 124.5, 123.094, 125.109, 125.781],
+      "render_consume_ms": [37.393, 38.284, 38.394, 38.188, 38.327],
+      "live_heap_mib": [24.82, 24.825, 24.823, 24.834, 24.829]
+    },
+    {
+      "experiment": "library-render",
+      "input": "4000-functions",
+      "variant": "skip-empty-caches",
+      "count": 4002,
+      "bytes": 868536,
+      "wall_ms": [238.657, 242.401, 236.935, 239.414, 244.947],
+      "peak_rss_mib": [122.891, 124.047, 124.297, 122.062, 122.875],
+      "render_consume_ms": [74.522, 74.952, 73.099, 74.941, 75.202],
+      "live_heap_mib": [23.329, 23.33, 23.334, 23.329, 23.333]
+    },
+    {
+      "experiment": "library-render",
+      "input": "syn",
+      "variant": "baseline",
+      "count": 282,
+      "bytes": 468661,
+      "wall_ms": [561.514, 558.116, 568.893, 552.746, 560.161],
+      "peak_rss_mib": [208.828, 207.5, 207.672, 205.844, 205.766],
+      "render_consume_ms": [343.831, 343.452, 348.0, 340.186, 341.784],
+      "live_heap_mib": [31.056, 31.064, 31.052, 31.051, 31.051]
+    },
+    {
+      "experiment": "library-render",
+      "input": "syn",
+      "variant": "short-default-frontmatter",
+      "count": 282,
+      "bytes": 468661,
+      "wall_ms": [561.719, 553.639, 564.48, 556.43, 568.468],
+      "peak_rss_mib": [207.5, 209.078, 210.953, 207.875, 208.031],
+      "render_consume_ms": [342.49, 338.589, 347.056, 341.718, 345.376],
+      "live_heap_mib": [31.062, 31.057, 31.065, 31.062, 31.069]
+    },
+    {
+      "experiment": "library-render",
+      "input": "syn",
+      "variant": "skip-empty-caches",
+      "count": 282,
+      "bytes": 468661,
+      "wall_ms": [570.985, 563.798, 576.349, 559.544, 556.586],
+      "peak_rss_mib": [206.328, 208.406, 209.031, 206.594, 207.312],
+      "render_consume_ms": [347.919, 348.283, 353.483, 344.268, 343.657],
+      "live_heap_mib": [31.03, 31.032, 31.042, 31.032, 31.041]
+    },
+    {
+      "experiment": "strict-workspace-publication",
+      "input": "six-crate-workspace",
+      "variant": "baseline",
+      "wall_ms": [1976.72, 2014.587, 2001.667, 1980.9, 1982.227],
+      "preview_ms": [957.305, 977.341, 961.038, 958.154, 957.621],
+      "publication_ms": [1019.415, 1037.246, 1040.629, 1022.746, 1024.606]
+    },
+    {
+      "experiment": "strict-workspace-publication",
+      "input": "six-crate-workspace",
+      "variant": "require-complete",
+      "wall_ms": [1031.267, 1025.749, 1027.57, 1023.553, 1034.301],
+      "publication_ms": [1031.267, 1025.749, 1027.57, 1023.553, 1034.301]
+    }
+  ]
+}
