@@ -31,6 +31,7 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
     },
+    "./llms.txt": "./llms.txt",
     "./package.json": "./package.json"
   },
   "main": "dist/index.js",
@@ -41,6 +42,7 @@
   "files": [
     "dist",
     "README.md",
+    "llms.txt",
     "LICENSE",
     "CHANGELOG.md",
     "src",

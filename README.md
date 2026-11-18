@@ -1,8 +1,10 @@
 # rustdoc-to-fumadocs
 
-Generate a browsable Rust API reference for a Fumadocs site. The CLI reads rustdoc JSON and writes MDX pages and sidebar metadata. It follows public re-exports, links types across Cargo workspace members, and renders Rust signatures, members, implementations, feature gates, and safety documentation.
+Generate a browsable Rust API reference for a Fumadocs site. The TypeScript CLI runs on Node.js, reads the JSON that rustdoc produces for a Rust crate, and writes MDX pages and sidebar metadata. It follows public re-exports, links types across Cargo workspace members, and renders Rust signatures, members, implementations, feature gates, and safety documentation.
 
 [![CI](https://github.com/biostochastics/rustdoc-to-fumadocs/actions/workflows/ci.yml/badge.svg)](https://github.com/biostochastics/rustdoc-to-fumadocs/actions/workflows/ci.yml) [![MIT License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
+For an agent-readable index of commands, output formats, and library entry points, see [llms.txt](llms.txt). The same file ships in the npm package.
 
 ## Quick start
 
@@ -10,14 +12,16 @@ Use Node.js 20.19+ on the 20.x line, or 22.12+. Rust is needed to **produce** th
 
 ```sh
 npm ci
-archive=$(npm pack --silent)
-npm install --global "./$archive"
+archive_dir=$(mktemp -d)
+npm pack --pack-destination "$archive_dir"
+npm install --global "$archive_dir"/*.tgz
 rustdoc-to-fumadocs --version
 ```
 
-From your Rust project's directory, generate JSON and point the converter at the docs content directory in your site.
+The Cargo example uses rustup. Install nightly once, then run Cargo from your Rust project's directory and point the converter at your site's docs content directory.
 
 ```sh
+rustup toolchain install nightly --profile minimal
 RUSTDOCFLAGS="-Z unstable-options --output-format json" cargo +nightly doc --no-deps
 rustdoc-to-fumadocs --input target/doc/my_crate.json \
   --output ../my-site/content/docs/api --base-url /docs/api
@@ -108,7 +112,7 @@ rustdoc-to-fumadocs --workspace . --exclude xtask \
   --source-url-base https://github.com/example/project --source-ref v1.2.0
 ```
 
-Cargo metadata supplies workspace membership, inherited publish settings, target names, and the target directory. A TOML fallback handles explicit members, globs, excludes, root packages, and renamed libraries on hosts with prebuilt JSON. The converter indexes member routes first, then verifies each input digest and renders one member at a time. Small validated members can be reused within the cache budget. The budget measures source bytes, so process memory can exceed it. The workspace landing page links to each documented crate. For packages with multiple binary targets, select a specific target with `--input` when needed.
+Cargo metadata supplies workspace membership, inherited publish settings, target names, and the target directory. A TOML fallback handles explicit members, globs, excludes, root packages, and explicitly named library or binary targets on hosts with prebuilt JSON. The converter indexes member routes first, then verifies each input digest and renders one member at a time. Small validated members can be reused within the cache budget. The budget measures source bytes, so process memory can exceed it. The workspace landing page links to each documented crate. For packages with multiple binary targets, select a specific target with `--input` when needed.
 
 Missing member inputs produce warnings. A preview reports `status: "partial"` and a `workspace.skipped` list when some members were skipped. A run with zero usable members exits with an error. Use `--require-complete` in CI to check coverage and publish in one invocation. A strict failure reports skipped members and preserves the previous output.
 
@@ -120,7 +124,7 @@ For a route inventory, run `rustdoc-to-fumadocs --workspace --list-files --json`
 
 ### Regeneration
 
-The CLI reports how many files it wrote, kept unchanged, and removed. It checks live destinations before publication and records generated file hashes in `.rustdoc-to-fumadocs.manifest` in the output directory. Keep that manifest with the generated tree. A complete run removes obsolete pages it previously generated when their contents still match the manifest. Edited obsolete pages and unrelated guides are preserved. Partial workspace runs defer cleanup until a complete run. Files created before 0.5.0 have no ownership record. Start in a fresh output directory when migrating a generated-only tree.
+The CLI reports how many files it wrote, kept unchanged, and removed. It checks live destinations before publication and records generated file hashes in `.rustdoc-to-fumadocs.manifest` in the output directory. Keep that manifest with the generated tree. A complete run removes obsolete pages it previously generated when their contents still match the manifest. Edited obsolete pages and unrelated guides are preserved. If a renamed page would overwrite an edited obsolete file on a case-insensitive volume, move or restore the edit and retry. Partial workspace runs defer cleanup until a complete run. Files created before 0.5.0 have no ownership record. Start in a fresh output directory when migrating a generated-only tree.
 
 Use the CLI for managed disk writes. Normal write errors roll back changes during publication. A lock serializes publication to an output directory. If the process was forcibly terminated, inspect the output and any stage directory before removing an abandoned lock and retrying.
 

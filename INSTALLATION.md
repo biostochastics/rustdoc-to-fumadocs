@@ -6,8 +6,9 @@ The CLI requires Node.js 20.19+ on the 20.x line, or 22.12+. To use the version 
 git clone https://github.com/biostochastics/rustdoc-to-fumadocs.git
 cd rustdoc-to-fumadocs
 npm ci
-archive=$(npm pack --silent)
-npm install --global "./$archive"
+archive_dir=$(mktemp -d)
+npm pack --pack-destination "$archive_dir"
+npm install --global "$archive_dir"/*.tgz
 rustdoc-to-fumadocs --version
 ```
 
@@ -15,9 +16,10 @@ For development, use `npm run dev -- --help`. For a local build without a global
 
 ## Generate input
 
-From a Rust crate directory, run the following command and supply the resulting JSON to the converter.
+The following example uses rustup. Install the nightly toolchain once, then run Cargo from the Rust crate directory and pass the resulting JSON to the converter.
 
 ```sh
+rustup toolchain install nightly --profile minimal
 RUSTDOCFLAGS="-Z unstable-options --output-format json" cargo +nightly doc --no-deps
 rustdoc-to-fumadocs --input target/doc/my_crate.json --output content/docs/api
 ```

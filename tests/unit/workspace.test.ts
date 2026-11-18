@@ -2,7 +2,7 @@
  * Unit tests for workspace.ts — Cargo workspace discovery and rendering.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { mkdtemp, rm, writeFile, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -81,6 +81,27 @@ describe("loadWorkspace", () => {
 
     const ws = await loadWorkspace(join(tmp, "Cargo.toml"));
     expect(ws.members.map((m) => m.name).sort()).toEqual(["alpha", "beta", "gamma"]);
+  });
+
+  it("finds renamed binary JSON without Cargo and preserves library precedence", async () => {
+    vi.stubEnv("PATH", "");
+    try {
+      await writeFile(join(tmp, "Cargo.toml"), '[workspace]\nmembers=["app"]\n');
+      const dir = join(tmp, "app");
+      await mkdir(join(dir, "src"), { recursive: true });
+      await writeFile(
+        join(dir, "Cargo.toml"),
+        '[package]\nname="tool"\nversion="0.1.0"\n[[bin]]\nname="hidden"\ndoc=false\n[[bin]]\nname="public-tool"\npath="src/main.rs"\n'
+      );
+      await writeFile(join(dir, "src/main.rs"), "fn main() {}");
+      const target = async () =>
+        (await loadWorkspace(join(tmp, "Cargo.toml"))).members[0].crateName;
+      expect(await target()).toBe("public_tool");
+      await writeFile(join(dir, "src/lib.rs"), "");
+      expect(await target()).toBe("tool");
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 
   it("applies the exclude list", async () => {

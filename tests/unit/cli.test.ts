@@ -6,7 +6,16 @@
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { appendFileSync } from "node:fs";
-import { mkdtemp, mkdir, rm, readdir, readFile, writeFile, chmod } from "node:fs/promises";
+import {
+  mkdtemp,
+  mkdir,
+  rm,
+  readdir,
+  readFile,
+  writeFile,
+  chmod,
+  truncate,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve, dirname, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -309,6 +318,20 @@ describe("run() - end-to-end CLI", () => {
     expect(allFiles.some((p) => p.endsWith("meta.json"))).toBe(true);
   });
 
+  it("rejects an oversized input before parsing or creating output", async () => {
+    const file = join(tmp, "large.json");
+    await writeFile(file, "");
+    await truncate(file, 100 * 1024 * 1024 + 1);
+    const io = captureStreams();
+    const output = join(tmp, "out");
+    expect(await run(["--input", file, "--output", output, "--json"], io.streams)).toBe(1);
+    expect(JSON.parse(io.stdout()).error).toMatchObject({
+      code: "INPUT_READ_FAILED",
+      message: expect.stringContaining("100 MiB"),
+    });
+    await expect(readdir(output)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
   it("emits --json output with crate metadata on success", async () => {
     const { streams, stdout } = captureStreams();
     const outDir = join(tmp, "out");
@@ -487,6 +510,25 @@ describe("run() - --workspace mode", () => {
     expect(await run([...args, "--list-files"], plain.streams)).toBe(0);
     expect(plain.stdout()).toBe(paths.join("\n") + "\n");
     await expect(readdir(dest)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("reports an invalid glob-matched member before strict publication", async () => {
+    await makeWorkspace(join(tmp, "target"));
+    await writeFile(join(tmp, "Cargo.toml"), '[workspace]\nmembers=["crates/*"]\n');
+    await mkdir(join(tmp, "crates/invalid"));
+    await writeFile(join(tmp, "crates/invalid/Cargo.toml"), "[package");
+    const out = join(tmp, "out");
+    const args = ["--workspace", tmp, "--output", out, "--list-files", "--json"];
+    const partial = captureStreams();
+    expect(await run(args, partial.streams)).toBe(0);
+    expect(JSON.parse(partial.stdout()).status).toBe("partial");
+    expect(
+      await run(
+        ["--workspace", tmp, "--output", out, "--require-complete"],
+        captureStreams().streams
+      )
+    ).toBe(1);
+    await expect(readdir(out)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("reads rustdoc JSON from --target-dir", async () => {

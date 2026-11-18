@@ -31,9 +31,10 @@ jobs:
       - run: npm run test:coverage
       - name: Build and smoke-test the packed CLI
         run: |
-          archive=$(npm pack --silent)
-          mkdir -p "$RUNNER_TEMP/consumer"
-          npm install --prefix "$RUNNER_TEMP/consumer" --no-audit --no-fund "$PWD/$archive"
+          mkdir -p "$RUNNER_TEMP/package" "$RUNNER_TEMP/consumer"
+          npm pack --pack-destination "$RUNNER_TEMP/package"
+          npm install --prefix "$RUNNER_TEMP/consumer" --no-audit --no-fund "$RUNNER_TEMP/package"/*.tgz
+          cmp llms.txt "$RUNNER_TEMP/consumer/node_modules/rustdoc-to-fumadocs/llms.txt"
           cli="$RUNNER_TEMP/consumer/node_modules/.bin/rustdoc-to-fumadocs"
           "$cli" --version
           "$cli" tests/fixtures/minimal.json --list-files --json > "$RUNNER_TEMP/paths.json"

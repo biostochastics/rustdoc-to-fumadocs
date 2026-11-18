@@ -126,6 +126,26 @@ it("commits the current filename when only its capitalization changes", async ()
   expect(await readFile(join(root, "api/Entry.mdx"), "utf8")).toBe("new");
 });
 
+it.each([true, false])("preserves an edited obsolete case alias (prune=%s)", async (prune) => {
+  await publish({ "api/entry.mdx": "old" });
+  const manifest = join(root, ".rustdoc-to-fumadocs.manifest");
+  const before = await readFile(manifest);
+  await writeFile(join(root, "api/entry.mdx"), "my edit");
+  const caseInsensitive = await stat(join(root, "api/Entry.mdx")).then(
+    () => true,
+    () => false
+  );
+  const publication = publish({ "api/Entry.mdx": "new" }, "crate:a", prune);
+  if (caseInsensitive) {
+    await expect(publication).rejects.toThrow(/edited page/);
+    expect(await readFile(manifest)).toEqual(before);
+  } else {
+    await publication;
+    expect(await readFile(join(root, "api/Entry.mdx"), "utf8")).toBe("new");
+  }
+  expect(await readFile(join(root, "api/entry.mdx"), "utf8")).toBe("my edit");
+});
+
 it("keeps another owner's page across capitalization differences on the destination filesystem", async () => {
   await publish({ "api/entry.mdx": "shared content" });
   const caseInsensitive = await stat(join(root, "api/Entry.mdx")).then(

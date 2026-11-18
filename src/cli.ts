@@ -7,7 +7,7 @@
  *   npx tsx src/cli.ts --crate my_crate --output content/docs/api
  */
 
-import { readFile, stat, access } from "node:fs/promises";
+import { readFile, open, access } from "node:fs/promises";
 import { realpathSync } from "node:fs";
 import { basename, resolve, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -317,6 +317,7 @@ Preview and reporting
   -h, --help               Show this help
 
 Generate the input from a Rust crate
+  Install nightly once: rustup toolchain install nightly --profile minimal
   RUSTDOCFLAGS="-Z unstable-options --output-format json" cargo +nightly doc --no-deps
   Add --workspace to the Cargo command to build inputs for all members.
   With stable Rust, set RUSTC_BOOTSTRAP=1 in place of selecting +nightly.
@@ -369,13 +370,37 @@ export function formatError(error: unknown): string {
 }
 
 async function readInput(path: string): Promise<Buffer> {
+  const tooLarge = () =>
+    new RustdocError(ErrorCode.INPUT_READ_FAILED, `Input file too large: ${path} (max: 100 MiB)`);
   try {
-    if ((await stat(path)).size > MAX_INPUT_SIZE_BYTES)
-      throw new RustdocError(
-        ErrorCode.INPUT_READ_FAILED,
-        `Input file too large: ${path} (max: 100MB)`
-      );
-    return await readFile(path);
+    const handle = await open(path, "r");
+    try {
+      const { size } = await handle.stat();
+      if (size > MAX_INPUT_SIZE_BYTES) throw tooLarge();
+      // Ordinary files fit in the first buffer. The extra byte distinguishes
+      // EOF from growth; reads from a growing file or pipe stay bounded too.
+      let buffer = Buffer.allocUnsafe(size + 1);
+      let offset = 0;
+      let total = 0;
+      const chunks: Buffer[] = [];
+      for (;;) {
+        const { bytesRead } = await handle.read(buffer, offset, buffer.length - offset);
+        if (!bytesRead) {
+          const tail = buffer.subarray(0, offset);
+          return chunks.length ? Buffer.concat([...chunks, tail], total) : tail;
+        }
+        total += bytesRead;
+        if (total > MAX_INPUT_SIZE_BYTES) throw tooLarge();
+        offset += bytesRead;
+        if (offset === buffer.length) {
+          chunks.push(buffer);
+          buffer = Buffer.allocUnsafe(Math.min(64 * 1024, MAX_INPUT_SIZE_BYTES - total + 1));
+          offset = 0;
+        }
+      }
+    } finally {
+      await handle.close();
+    }
   } catch (err) {
     if (isRustdocError(err)) throw err;
     throw inputReadError(path, err as Error);
@@ -394,7 +419,8 @@ async function singleInput(args: CliArgs): Promise<{ path: string; packageName?:
   let pkgName: string | undefined;
   let targetName: string | undefined;
   let discovered: string | undefined;
-  const { cargoWorkspace, findMemberRustdocJson } = await import("./workspace.js");
+  const { cargoWorkspace, findMemberRustdocJson, manifestTargetName } =
+    await import("./workspace.js");
   if (await pathExists("Cargo.toml")) {
     const manifestPath = resolve("Cargo.toml");
     const workspace = await cargoWorkspace(manifestPath);
@@ -410,12 +436,15 @@ async function singleInput(args: CliArgs): Promise<{ path: string; packageName?:
       try {
         const { parse: parseToml } = await import("smol-toml");
         const manifest = parseToml(await readFile(manifestPath, "utf8")) as {
-          package?: { name?: string };
+          package?: { name?: string; autolib?: boolean; autobins?: boolean };
           lib?: { name?: string };
         };
-        if (!name || name === manifest.package?.name || name === manifest.lib?.name) {
+        const target =
+          manifest.package?.name &&
+          (await manifestTargetName(manifest, manifest.package.name, process.cwd()));
+        if (!name || name === manifest.package?.name || name.replace(/-/g, "_") === target) {
           pkgName = manifest.package?.name;
-          targetName = manifest.lib?.name;
+          targetName = target;
         }
       } catch (err) {
         if (!name) throw err;

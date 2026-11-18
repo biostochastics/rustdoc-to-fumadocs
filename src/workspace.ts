@@ -150,6 +150,49 @@ function publishable(value: unknown): boolean | undefined {
   return undefined;
 }
 
+interface ManifestTarget {
+  name?: string;
+  path?: string;
+  doc?: boolean;
+}
+
+/** Prefer a documented library, then the package-named binary, then a declared binary. */
+export async function manifestTargetName(
+  manifest: {
+    lib?: ManifestTarget;
+    bin?: ManifestTarget[];
+    package?: { autolib?: boolean; autobins?: boolean };
+  },
+  name: string,
+  dir: string
+): Promise<string | undefined> {
+  const { lib } = manifest;
+  if (lib && lib.doc !== false)
+    return (typeof lib.name === "string" ? lib.name : name).replace(/-/g, "_");
+  if (!Array.isArray(manifest.bin)) return undefined;
+  const bins = manifest.bin.filter((b) => typeof b?.name === "string" && b.doc !== false);
+  const exists = (file: string) =>
+    access(join(dir, file)).then(
+      () => true,
+      () => false
+    );
+  if (!lib && manifest.package?.autolib !== false && (await exists("src/lib.rs")))
+    return name.replace(/-/g, "_");
+  const primary = bins.find((bin) => bin.name === name);
+  if (primary) return name.replace(/-/g, "_");
+  if (
+    manifest.package?.autobins !== false &&
+    !manifest.bin.some(
+      (b) =>
+        b?.name === name ||
+        (typeof b?.path === "string" && resolve(dir, b.path) === join(dir, "src/main.rs"))
+    ) &&
+    (await exists("src/main.rs"))
+  )
+    return name.replace(/-/g, "_");
+  return bins[0]?.name?.replace(/-/g, "_");
+}
+
 /**
  * Read a member's own `Cargo.toml` to recover its `package.name` and
  * whether it is publishable. Cargo requires the name to be unique within
@@ -184,8 +227,7 @@ async function readMember(
   const inherited =
     typeof raw === "object" && raw !== null && !Array.isArray(raw) && "workspace" in raw;
   const publish = (inherited ? workspacePublish : publishable(raw)) ?? true;
-  const lib = (parsed as { lib?: { name?: unknown } }).lib;
-  return { name, publish, crateName: typeof lib?.name === "string" ? lib.name : undefined };
+  return { name, publish, crateName: await manifestTargetName(parsed, name, memberDir) };
 }
 
 /**
@@ -264,8 +306,7 @@ export async function loadWorkspace(workspaceTomlPath: string): Promise<Workspac
   for (const dir of expanded) {
     const m = await readMember(dir, publish);
     if (m) members.push({ ...m, path: dir });
-    else if (memberPatterns.some((p) => resolve(rootDir, p) === dir))
-      skipped.push({ name: dir, reason: "missing or invalid package manifest" });
+    else skipped.push({ name: dir, reason: "missing or invalid package manifest" });
   }
   return { rootDir, members, skipped };
 }

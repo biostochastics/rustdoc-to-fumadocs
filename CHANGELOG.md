@@ -8,6 +8,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Rel
 
 ### Added
 
+- Ship a concise `llms.txt` documentation index in the repository and npm package.
 - List planned output paths with `--list-files` or `RustdocGenerator.filePaths()`. Add `--json` for an ordered `paths` array and workspace status.
 - Require complete workspace coverage before writing with `--require-complete`. Set `--workspace-cache-mib N` to control how much input can be reused between passes. The default is 4 MiB.
 - Consume rendered files in publication order using the synchronous `generateFiles()` iterator. The existing `generate()` method returns the full array.
@@ -19,7 +20,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Rel
 
 ### Fixed
 
-- Preserve pages when a filename changes capitalization and retain independent additions during rollback after a publication error.
+- Enforce the 100 MiB input limit on the opened file, including files that grow while being read.
+- Find explicitly renamed binaries and report invalid glob-matched members when using the manifest fallback. Strict publication stops before writing when a selected manifest is invalid.
+- Preserve pages and detect conflicting local edits when a filename changes capitalization. Retain independent additions during rollback after a publication error.
 
 ## 0.5.1 - 2026-11-17
 

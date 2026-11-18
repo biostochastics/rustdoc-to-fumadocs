@@ -1,0 +1,27 @@
+# rustdoc-to-fumadocs
+
+> A TypeScript CLI and ESM library that converts rustdoc JSON into linked MDX pages and sidebar metadata for Fumadocs. Rust produces the input. Node.js runs the converter.
+
+For an inventory, run `rustdoc-to-fumadocs --input crate.json --list-files --json` and read `paths`. For rendered sizes and diagnostics, use `--json` alone and read `files`, `stats`, and `warnings`. Both commands leave the output directory untouched.
+
+To write a complete workspace reference, run `rustdoc-to-fumadocs --workspace . --require-complete --output content/docs/api`. Keep the ownership manifest beside the generated pages for subsequent builds. Match `--base-url` to the URL where the site serves that output.
+
+## Run the converter
+
+- [Install from a checkout and generate rustdoc JSON](INSTALLATION.md)
+- [CLI options, layouts, previews, and source links](README.md#cli)
+- [Workspace selection, strict publication, and cache budget](README.md#cargo-workspaces)
+- [Regeneration, file ownership, and cleanup](README.md#regeneration)
+- [Supported Node.js, Rust, and Fumadocs versions](README.md#compatibility)
+
+## Integrate with a site or application
+
+- [Fumadocs component registration and source loader](README.md#fumadocs-integration)
+- [Library API, file iteration, frontmatter, and cross-crate linking](README.md#library-api)
+- [Include private items using rustdoc and a generator filter](README.md#document-private-items)
+- [Write crate overviews, item docs, and hand-written guides](README.md#write-guides-and-api-documentation)
+
+## Optional
+
+- [Public library exports](src/index.ts)
+- [Release notes and migration details](CHANGELOG.md)

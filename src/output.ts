@@ -286,8 +286,14 @@ export class OutputTransaction {
       // can address the same live file on a case-insensitive filesystem.
       const aliases = new Map<string, string[]>();
       const folded = (path: string) => path.normalize("NFC").toLowerCase();
-      if (prune) {
-        for (const path of Object.keys(old)) if (!this.pages.has(path)) changes.set(path, false);
+      const previousSpellings = new Map<string, string[]>();
+      for (const path of Object.keys(old)) {
+        if (this.pages.has(path)) continue;
+        const key = folded(path);
+        const group = previousSpellings.get(key);
+        if (group) group.push(path);
+        else previousSpellings.set(key, [path]);
+        if (prune) changes.set(path, false);
       }
       if (changes.size) {
         for (const path of changes.keys()) aliases.set(folded(path), []);
@@ -305,7 +311,23 @@ export class OutputTransaction {
       }
       await inBatches(changes, async ([path, install]) => {
         const { dest, stat } = await this.destination(path);
-        if (install && old[path] !== next[path]) return;
+        if (install && old[path] !== next[path]) {
+          // An obsolete edited page is preserved even when a new spelling
+          // reaches it on this volume. Stop before changing any live files.
+          const previous = !Object.hasOwn(old, path) && previousSpellings.get(folded(path));
+          if (stat && previous) {
+            for (const alias of previous) {
+              if (
+                (await this.sharesDestination(dest, [alias])) &&
+                (await fileDigest(dest, stat.size)) !== old[alias]
+              )
+                throw new Error(
+                  `Move or restore the edited page "${alias}" before publishing "${path}".`
+                );
+            }
+          }
+          return;
+        }
         const matches = !!stat && (await fileDigest(dest, stat.size)) === old[path];
         if (install ? matches : !matches) changes.delete(path);
         else if (!install && aliases.size) {
