@@ -127,6 +127,13 @@ impl Widget {
     }
 }
 
+#[cfg(feature = "extra")]
+#[cfg_attr(docsrs, doc(cfg(feature = "extra")))]
+impl Widget {
+    /// Only with the `extra` feature.
+    pub fn extra_method(&self) {}
+}
+
 /// Parse error for [`Widget::parse`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ParseFailure;

@@ -307,22 +307,52 @@ export function renderSafetyCallout(docs?: string | null): string {
  * Render a feature gate callout for items requiring specific Cargo features.
  *
  * @param feature - The required feature name
+ * @param crateName - Package name for the `Cargo.toml` snippet
+ * @param version - Version for the snippet (default `"*"`)
  * @returns MDX Callout component for feature gate notice
  *
  * @example
  * ```typescript
- * const featureGate = renderFeatureGateCallout("async-std");
+ * const featureGate = renderFeatureGateCallout("async-std", "my-crate", "1.2.0");
  * // <Callout type="info" title={"Feature Gate"}>
- * // This item requires the `async-std` feature to be enabled in `Cargo.toml`.
- * // </Callout>
+ * // Available on crate feature `async-std` only. ...
  * ```
  */
-export function renderFeatureGateCallout(feature: string): string {
-  return renderCallout(
-    "info",
-    "Feature Gate",
-    `This item requires the \`${feature}\` feature to be enabled in \`Cargo.toml\`.\n\n\`\`\`toml\n[dependencies]\ncrate_name = { version = "...", features = ["${feature}"] }\n\`\`\``
+export function renderFeatureGateCallout(
+  feature: string,
+  crateName = "your-crate",
+  version?: string | null
+): string {
+  return renderCfgCallout(
+    `Available on crate feature \`${feature}\` only. Enable it in \`Cargo.toml\`:`,
+    [feature],
+    crateName,
+    version
   );
+}
+
+/**
+ * Render a callout for an item gated on `cfg` predicates: the description
+ * (see `describeCfgs`) and, when Cargo features are required, the
+ * `Cargo.toml` line that enables them.
+ *
+ * @param text - Sentence describing the gate ("Available on crate feature `x` only.")
+ * @param features - Cargo features to enable (empty: no snippet)
+ * @param crateName - Package name for the `Cargo.toml` snippet
+ * @param version - Version for the snippet (default `"*"`)
+ */
+export function renderCfgCallout(
+  text: string,
+  features: string[],
+  crateName: string,
+  version?: string | null
+): string {
+  let body = text;
+  if (features.length > 0) {
+    const list = features.map((f) => JSON.stringify(f)).join(", ");
+    body += `\n\n\`\`\`toml\n[dependencies]\n${crateName} = { version = ${JSON.stringify(version ?? "*")}, features = [${list}] }\n\`\`\``;
+  }
+  return renderCallout("info", "Feature Gate", body);
 }
 
 /**

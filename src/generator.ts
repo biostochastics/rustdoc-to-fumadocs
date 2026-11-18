@@ -28,12 +28,12 @@ import type {
   Id,
   VariantKind,
   Type,
-  Attribute,
   GenericArgs,
 } from "./types.js";
 import { getItemKind, isPlainStruct, getPathName } from "./types.js";
 import { RustdocError, ErrorCode } from "./errors.js";
 import { rewriteDocLinks, demoteHeadings, summaryLine } from "./docs.js";
+import { itemCfgs, dedupeCfgs, describeCfgs, requiredFeatures, type Cfg } from "./cfg.js";
 
 /**
  * Maximum recursion depth for module processing.
@@ -89,6 +89,8 @@ interface PageEntry {
   via: Item | undefined;
   /** Absolute URL of the page (or kind-page anchor). */
   url: string;
+  /** cfg predicates the item is gated on, module gates included. */
+  gates: Cfg[];
 }
 
 /** A `pub use` that points at an item documented elsewhere. */
@@ -118,6 +120,8 @@ interface ModuleNode {
   reexports: ReexportEntry[];
   /** The `use` item this module was inlined through, if any. */
   via: Item | undefined;
+  /** cfg predicates the module is gated on, ancestors' gates included. */
+  gates: Cfg[];
   /** Lower-cased names claimed in this directory. */
   taken: Set<string>;
 }
@@ -291,7 +295,7 @@ import {
   renderTabs,
   renderCards,
   renderSafetyCallout,
-  renderFeatureGateCallout,
+  renderCfgCallout,
   renderPanicsCallout,
   renderErrorsCallout,
   type CardData,
@@ -867,6 +871,9 @@ export class RustdocGenerator {
     parent: ModuleNode | undefined,
     via: Item | undefined
   ): ModuleNode {
+    const gates = [...(parent?.gates ?? [])];
+    if (via) gates.push(...itemCfgs(via));
+    gates.push(...itemCfgs(item));
     return {
       item,
       name,
@@ -877,6 +884,7 @@ export class RustdocGenerator {
       submodules: [],
       reexports: [],
       via,
+      gates: dedupeCfgs(gates),
       taken: new Set(["index", "meta"]),
     };
   }
@@ -967,7 +975,10 @@ export class RustdocGenerator {
       this.options.groupBy === "kind"
         ? `${this.nodeUrl(node)}/${kindToFilename(kind)}#${headingSlug(name)}`
         : `${this.nodeUrl(node)}/${encodeSegment(file)}`;
-    const entry: PageEntry = { item, name, file, kind, node, via, url };
+    const gates = [...node.gates];
+    if (via) gates.push(...itemCfgs(via));
+    gates.push(...itemCfgs(item));
+    const entry: PageEntry = { item, name, file, kind, node, via, url, gates: dedupeCfgs(gates) };
     node.pages.push(entry);
     const key = String(item.id);
     if (!this.itemUrls.has(key)) this.itemUrls.set(key, url);
@@ -1269,6 +1280,12 @@ export class RustdocGenerator {
     sections.push(this.formatFrontmatter(frontmatter));
     sections.push("");
 
+    const gate = this.renderGate(node.gates);
+    if (gate) {
+      sections.push(gate);
+      sections.push("");
+    }
+
     const docs = this.docsFor(node.item, 1);
     if (docs) {
       sections.push(docs);
@@ -1449,16 +1466,16 @@ export class RustdocGenerator {
       const tabContents = new Map<string, string>();
       tabContents.set(
         "Methods",
-        inherentImpls.map((impl) => this.renderImpl(impl, page.item)).join("\n\n")
+        inherentImpls.map((impl) => this.renderImpl(impl, page.item, page.gates)).join("\n\n")
       );
       tabContents.set(
         "Trait Implementations",
-        traitImpls.map((impl) => this.renderImpl(impl, page.item)).join("\n\n")
+        traitImpls.map((impl) => this.renderImpl(impl, page.item, page.gates)).join("\n\n")
       );
       sections.push(renderTabs(["Methods", "Trait Implementations"], tabContents));
     } else {
       for (const impl of impls) {
-        sections.push(this.renderImpl(impl, page.item));
+        sections.push(this.renderImpl(impl, page.item, page.gates));
         sections.push("");
       }
     }
@@ -1751,10 +1768,10 @@ export class RustdocGenerator {
       sections.push("");
     }
 
-    // Feature gate callout (check attrs for cfg(feature = "..."))
-    const featureGate = this.extractFeatureGate(item.attrs);
-    if (featureGate) {
-      sections.push(renderFeatureGateCallout(featureGate));
+    // Feature gate callout: #[doc(cfg)] / #[cfg], module gates inherited.
+    const gate = this.renderGate(page.gates);
+    if (gate) {
+      sections.push(gate);
       sections.push("");
     }
 
@@ -1829,37 +1846,15 @@ export class RustdocGenerator {
   }
 
   /**
-   * Extract feature gate from item attributes.
-   * Looks for patterns like `#[cfg(feature = "feature_name")]`
-   * Supports both old string format and new object format (format 56+).
+   * Feature-gate callout for a conjunction of cfg predicates, with a
+   * `Cargo.toml` snippet naming the real package and version.
    */
-  private extractFeatureGate(attrs: Attribute[]): string | null {
-    for (const attr of attrs) {
-      // Normalize attribute to string
-      let attrStr: string;
-      if (typeof attr === "string") {
-        attrStr = attr;
-      } else if (typeof attr === "object" && attr !== null && "other" in attr) {
-        attrStr = (attr as { other: string }).other;
-      } else {
-        continue;
-      }
-
-      // Match cfg(feature = "...") and cfg_attr(feature = "...", ...)
-      // Also handles cfg_attr(not(feature = "..."), ...) and similar patterns
-      // Support both double and single quotes for compatibility with different rustdoc versions
-      const doubleQuoteMatch =
-        /(?:cfg|cfg_attr)\s*\(\s*(?:not\s*\(\s*)?feature\s*=\s*"([^"]+)"/.exec(attrStr);
-      if (doubleQuoteMatch) {
-        return doubleQuoteMatch[1];
-      }
-      const singleQuoteMatch =
-        /(?:cfg|cfg_attr)\s*\(\s*(?:not\s*\(\s*)?feature\s*=\s*'([^']+)'/.exec(attrStr);
-      if (singleQuoteMatch) {
-        return singleQuoteMatch[1];
-      }
-    }
-    return null;
+  private renderGate(gates: Cfg[]): string {
+    const text = describeCfgs(gates);
+    if (!text) return "";
+    const crateName =
+      this.options.packageName ?? this.getItem(this.crate.root)?.name ?? "your-crate";
+    return renderCfgCallout(text, requiredFeatures(gates), crateName, this.crate.crate_version);
   }
 
   /**
@@ -2366,7 +2361,7 @@ export class RustdocGenerator {
    * @param impl - The impl item to render (must have 'impl' in inner)
    * @returns MDX content string for the implementation block
    */
-  private renderImpl(impl: Item, owner?: Item): string {
+  private renderImpl(impl: Item, owner?: Item, ownerGates: Cfg[] = []): string {
     if (!("impl" in impl.inner)) return "";
     const implDef = impl.inner.impl;
     const sections: string[] = [];
@@ -2396,8 +2391,17 @@ export class RustdocGenerator {
     }
     header += ` ${formatType(implDef.for)}`;
 
-    sections.push(`### \`${header}\``);
+    sections.push(`### ${inlineCode(header)}`);
     sections.push("");
+
+    // An impl gated on more than the type itself (e.g. a feature-only
+    // inherent impl) says so under its header.
+    const ownerKeys = new Set(ownerGates.map((g) => JSON.stringify(g)));
+    const extra = dedupeCfgs(itemCfgs(impl)).filter((g) => !ownerKeys.has(JSON.stringify(g)));
+    if (extra.length > 0) {
+      sections.push(`*${describeCfgs(extra)}*`);
+      sections.push("");
+    }
 
     // Render impl methods, each under its own anchored heading so it shows
     // in the table of contents and intra-doc links can target it.

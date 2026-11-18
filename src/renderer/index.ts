@@ -42,6 +42,7 @@ export {
   renderDangerNotice,
   renderSafetyCallout,
   renderFeatureGateCallout,
+  renderCfgCallout,
   renderPanicsCallout,
   renderErrorsCallout,
   extractDocSection,
