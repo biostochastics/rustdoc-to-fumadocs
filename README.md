@@ -1,8 +1,11 @@
-# rustdoc-to-fumadocs
+<h1 align="center">rustdoc-to-fumadocs</h1>
+
+<p align="center">
+  <a href="https://github.com/biostochastics/rustdoc-to-fumadocs/actions/workflows/ci.yml"><img src="https://github.com/biostochastics/rustdoc-to-fumadocs/actions/workflows/ci.yml/badge.svg" alt="CI status"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT license"></a>
+</p>
 
 Generate a browsable Rust API reference for a Fumadocs site. The TypeScript CLI runs on Node.js, reads the JSON that rustdoc produces for a Rust crate, and writes MDX pages and sidebar metadata. It follows public re-exports, links types across Cargo workspace members, and renders Rust signatures, members, implementations, feature gates, and safety documentation.
-
-[![CI](https://github.com/biostochastics/rustdoc-to-fumadocs/actions/workflows/ci.yml/badge.svg)](https://github.com/biostochastics/rustdoc-to-fumadocs/actions/workflows/ci.yml) [![MIT License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 For an agent-readable index of commands, output formats, and library entry points, see [llms.txt](llms.txt). The same file ships in the npm package.
 
