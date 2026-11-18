@@ -81,6 +81,28 @@ describe("validateRustdocJson", () => {
     expect(warnings).toEqual([]);
   });
 
+  it("accepts format 60 (Rust 1.98) without a version warning", () => {
+    const data: unknown = JSON.parse(
+      readFileSync(join(fixturesDir, "kitchen_sink.v60.json"), "utf-8")
+    );
+    const { crate, warnings } = validateRustdocJson(data);
+    expect(crate.format_version).toBe(60);
+    expect(warnings).toEqual([]);
+  });
+
+  it("keeps the format 58-60 stability fields instead of stripping them", () => {
+    const data = JSON.parse(readFileSync(join(fixturesDir, "minimal.json"), "utf-8")) as {
+      format_version: number;
+      index: Record<string, Record<string, unknown>>;
+    };
+    data.format_version = 60;
+    const item = data.index["0:1:0"];
+    item.stability = { level: "unstable", feature: "my_feature" };
+    item.const_stability = null;
+    const { crate } = validateRustdocJson(data);
+    expect(crate.index["0:1:0"].stability).toEqual({ level: "unstable", feature: "my_feature" });
+  });
+
   it("throws for non-object input", () => {
     expect(() => validateRustdocJson("not an object")).toThrow(RustdocError);
     expect(() => validateRustdocJson(null)).toThrow(RustdocError);

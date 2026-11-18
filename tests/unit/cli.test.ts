@@ -9,7 +9,14 @@ import { mkdtemp, rm, readdir, readFile, writeFile, chmod } from "node:fs/promis
 import { tmpdir } from "node:os";
 import { join, resolve, dirname, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { parseArgs, validateOutputPath, formatError, run, type CliStreams } from "../../src/cli.js";
+import {
+  parseArgs,
+  validateOutputPath,
+  formatError,
+  run,
+  isDirectInvocation,
+  type CliStreams,
+} from "../../src/cli.js";
 import { RustdocError, ErrorCode } from "../../src/errors.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -393,6 +400,63 @@ describe("run() - --workspace mode", () => {
     expect(indexContent).toContain("1 crate");
   });
 
+  /** One-member workspace whose rustdoc JSON lives in `<targetDir>/doc`. */
+  async function makeWorkspace(targetDir: string, json?: string): Promise<void> {
+    const { mkdir: mk } = await import("node:fs/promises");
+    await mk(join(tmp, "crates", "testy"), { recursive: true });
+    await writeFile(join(tmp, "Cargo.toml"), `[workspace]\nmembers = ["crates/testy"]\n`, "utf-8");
+    await writeFile(
+      join(tmp, "crates", "testy", "Cargo.toml"),
+      `[package]\nname = "testy"\nversion = "0.1.0"\n`,
+      "utf-8"
+    );
+    await mk(join(targetDir, "doc"), { recursive: true });
+    await writeFile(
+      join(targetDir, "doc", "testy.json"),
+      json ?? (await readFile(fixturePath, "utf-8")),
+      "utf-8"
+    );
+  }
+
+  it("reads rustdoc JSON from --target-dir", async () => {
+    const target = join(tmp, "elsewhere");
+    await makeWorkspace(target);
+    const { streams, stderr } = captureStreams();
+    const outDir = join(tmp, "out");
+    const code = await run(
+      ["--workspace", tmp, "--target-dir", target, "--output", outDir],
+      streams
+    );
+    expect(stderr()).toBe("");
+    expect(code).toBe(0);
+    expect(await readFile(join(outDir, "test_crate", "index.mdx"), "utf-8")).toContain("title:");
+  });
+
+  it("honours CARGO_TARGET_DIR", async () => {
+    const target = join(tmp, "cargo-target");
+    await makeWorkspace(target);
+    const saved = process.env.CARGO_TARGET_DIR;
+    process.env.CARGO_TARGET_DIR = target;
+    try {
+      const { streams } = captureStreams();
+      const code = await run(["--workspace", tmp, "--output", join(tmp, "out")], streams);
+      expect(code).toBe(0);
+    } finally {
+      if (saved === undefined) delete process.env.CARGO_TARGET_DIR;
+      else process.env.CARGO_TARGET_DIR = saved;
+    }
+  });
+
+  it("surfaces format-version warnings in workspace mode", async () => {
+    const json = JSON.parse(await readFile(fixturePath, "utf-8")) as { format_version: number };
+    json.format_version = 999;
+    await makeWorkspace(join(tmp, "target"), JSON.stringify(json));
+    const { streams, stderr } = captureStreams();
+    const code = await run(["--workspace", tmp, "--output", join(tmp, "out")], streams);
+    expect(code).toBe(0);
+    expect(stderr()).toMatch(/testy: Rustdoc format version 999 is newer/);
+  });
+
   it("returns a non-zero exit when no member has a rustdoc JSON", async () => {
     const { mkdir: mk } = await import("node:fs/promises");
     await mk(join(tmp, "crates", "ghost"), { recursive: true });
@@ -420,5 +484,25 @@ describe("run() - --workspace mode", () => {
     const code = await run(["--workspace", tmp, "--output", join(tmp, "out")], streams);
     expect(code).toBe(1);
     expect(stderr()).toMatch(/no \[workspace\] table/);
+  });
+});
+
+describe("isDirectInvocation", () => {
+  it("treats a symlinked bin (npm/npx) as a direct invocation", async () => {
+    const { symlink, mkdtemp: mkd } = await import("node:fs/promises");
+    const dir = await mkd(join(tmpdir(), "rd2fd-bin-"));
+    try {
+      const target = join(dir, "cli.js");
+      await writeFile(target, "", "utf-8");
+      const link = join(dir, "rustdoc-to-fumadocs");
+      await symlink(target, link);
+      const moduleUrl = new URL(`file://${target}`).href;
+      expect(isDirectInvocation(link, moduleUrl)).toBe(true);
+      expect(isDirectInvocation(target, moduleUrl)).toBe(true);
+      expect(isDirectInvocation(join(dir, "other.js"), moduleUrl)).toBe(false);
+      expect(isDirectInvocation(undefined, moduleUrl)).toBe(false);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 });

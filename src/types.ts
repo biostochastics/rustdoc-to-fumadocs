@@ -1,6 +1,6 @@
 /**
  * TypeScript types for rustdoc JSON output.
- * Based on rustdoc_json_types crate (format version ~57).
+ * Based on rustdoc_json_types crate (format versions 35-60).
  * @see https://doc.rust-lang.org/nightly/nightly-rustc/rustdoc_json_types/
  */
 
@@ -42,7 +42,17 @@ export interface Item {
   links: Record<string, Id>;
   attrs: Attribute[];
   deprecation?: Deprecation;
+  /** Format 58+: `#[stable]` / `#[unstable]` (staged_api crates only). */
+  stability?: Stability | null;
+  /** Format 58+: const stability (staged_api crates only). */
+  const_stability?: Stability | null;
   inner: ItemInner;
+}
+
+export interface Stability {
+  /** "stable" or "unstable". */
+  level: string;
+  feature?: string | null;
 }
 
 export interface ItemSummary {
