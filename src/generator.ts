@@ -32,7 +32,7 @@ import type {
 } from "./types.js";
 import { getItemKind, isPlainStruct, getPathName } from "./types.js";
 import { RustdocError, ErrorCode } from "./errors.js";
-import { rewriteDocLinks, demoteHeadings, summaryLine } from "./docs.js";
+import { rewriteDocLinks, demoteHeadings, summaryLine, takeSection } from "./docs.js";
 import { itemCfgs, dedupeCfgs, describeCfgs, requiredFeatures, type Cfg } from "./cfg.js";
 
 /**
@@ -296,6 +296,8 @@ import {
   formatEnumSignature,
   formatTraitSignature,
   formatGenerics,
+  formatGenericBound,
+  formatGenericArgs,
   renderTabs,
   renderCards,
   renderSafetyCallout,
@@ -320,22 +322,33 @@ function sanitizeLogMessage(message: string): string {
 }
 
 /**
- * Code-fence langs emitted by rustdoc that Shiki cannot resolve. These are
- * all Rust — the `compile_fail` / `ignore` / `no_run` / `should_panic` /
- * `edition20XX` tokens are doctest directives, not languages. Rewrite them
- * to `rust` and preserve the directive as the block title so it stays
- * visible to the reader.
+ * Doctest directives rustdoc accepts in a code fence's info string. A fence
+ * whose info string has only these (or nothing at all) is Rust: it is
+ * tagged `rust` so Shiki highlights it, keeps its first directive as the
+ * block title, and loses rustdoc's hidden `# ` lines.
  */
-const RUSTDOC_DOCTEST_DIRECTIVES = new Set([
-  "compile_fail",
-  "ignore",
-  "no_run",
-  "should_panic",
-  "edition2015",
-  "edition2018",
-  "edition2021",
-  "edition2024",
-]);
+const RUSTDOC_FENCE_TOKEN =
+  /^(rust|compile_fail|ignore|no_run|should_panic|test_harness|standalone_crate|allow_fail|edition20\d\d|ignore-[\w-]+|E\d{4}|\{[^}]*\})$/;
+
+/**
+ * Classify a code fence info string (the text after the backticks): Rust
+ * (per rustdoc's rules, including an empty info string) or another
+ * language.
+ */
+function classifyFenceInfo(info: string): { rust: boolean; title: string; extra: string } {
+  const tokens = info
+    .trim()
+    .split(/[\s,]+/)
+    .filter(Boolean);
+  if (tokens.every((t) => RUSTDOC_FENCE_TOKEN.test(t))) {
+    const directive = tokens.find((t) => t !== "rust" && !t.startsWith("{"));
+    return { rust: true, title: directive ?? "", extra: "" };
+  }
+  return { rust: false, title: "", extra: "" };
+}
+
+/** Crates whose docstrings were already normalized (normalization is not idempotent for `##`). */
+const NORMALIZED = new WeakSet<object>();
 
 /**
  * A conservative set of HTML tags that MDX parses safely inline. Everything
@@ -369,10 +382,12 @@ const SAFE_INLINE_HTML_TAGS = new Set([
  *   1. Code-fence aware: outside fenced ```...```, escape patterns MDX
  *      would mistake for JSX (URL autolinks `<https://…>`, Rust generic
  *      placeholders `<T>` / `<K, V>`, metasyntactic `<word>`).
- *   2. Code-fence language normalization: rewrite rustdoc's doctest
- *      directives (`compile_fail`, `ignore`, `no_run`, `should_panic`,
- *      `editionYYYY`) to `rust` with a `title="directive"` preserved so
- *      the doctest intent stays legible.
+ *   2. Code-fence normalization: a fence rustdoc treats as Rust (no info
+ *      string, `rust`, or only doctest directives such as `compile_fail`,
+ *      `ignore`, `no_run`, `should_panic`, `editionYYYY`, possibly
+ *      comma-separated) becomes ```rust, keeping the first directive as
+ *      `title="directive"`; hidden doctest lines (`# use foo;`) are
+ *      dropped and `##` unescapes to `#`.
  *
  * This was ported from a downstream fluxid-docs sync pipeline to the tool
  * itself — every consumer benefits without re-implementing the filters.
@@ -380,30 +395,39 @@ const SAFE_INLINE_HTML_TAGS = new Set([
 export function sanitizeDocstring(raw: string): string {
   if (!raw) return raw;
   const out: string[] = [];
-  let inFence = false;
+  let fence: { marker: string; rust: boolean } | null = null;
   for (const rawLine of raw.split("\n")) {
-    const fenceMatch = /^(\s*```)(\S+)?(.*)$/.exec(rawLine);
-    if (fenceMatch) {
-      // Entering or leaving a fence. Normalize langs on the opening fence.
-      if (!inFence && fenceMatch[2] && RUSTDOC_DOCTEST_DIRECTIVES.has(fenceMatch[2])) {
-        // Rewrite doctest directive → rust lang + title.
-        // Strip any `,ignore`/`,compile_fail`/etc. secondary tokens that
-        // rustdoc sometimes appends in the `rest` segment.
-        let rest = fenceMatch[3] ?? "";
-        rest = rest
-          .replace(/^[\s,]+/, "")
-          .replace(
-            /(^|[,\s])(compile_fail|ignore|no_run|should_panic|edition20(15|18|21|24))(\b)/g,
-            "$1"
-          );
-        out.push(`${fenceMatch[1]}rust title="${fenceMatch[2]}"${rest ? ` ${rest}` : ""}`);
-      } else {
-        out.push(rawLine);
-      }
-      inFence = !inFence;
+    const fenceMatch = /^(\s*)(`{3,}|~{3,})(.*)$/.exec(rawLine);
+    if (fence === null && fenceMatch) {
+      // Opening fence: classify the info string the way rustdoc does.
+      const [, indent, marker, info] = fenceMatch;
+      const { rust, title, extra } = classifyFenceInfo(info);
+      fence = { marker, rust };
+      out.push(
+        rust ? `${indent}${marker}rust${title ? ` title="${title}"` : ""}${extra}` : rawLine
+      );
       continue;
     }
-    if (inFence) {
+    if (fence !== null) {
+      const closing =
+        fenceMatch?.[2].startsWith(fence.marker[0]) === true &&
+        fenceMatch[2].length >= fence.marker.length &&
+        fenceMatch[3].trim() === "";
+      if (closing) {
+        fence = null;
+        out.push(rawLine);
+        continue;
+      }
+      if (fence.rust) {
+        // Doctest lines starting with `# ` (or a lone `#`) are hidden by
+        // rustdoc; `##` escapes a line that really starts with `#`.
+        const hidden = /^(\s*)#(.*)$/.exec(rawLine);
+        if (hidden && (hidden[2] === "" || /^\s/.test(hidden[2]))) continue;
+        if (hidden?.[2].startsWith("#")) {
+          out.push(hidden[1] + hidden[2]);
+          continue;
+        }
+      }
       out.push(rawLine);
       continue;
     }
@@ -618,6 +642,8 @@ export class RustdocGenerator {
    * (`compile_fail`, `ignore`, …) that Shiki cannot resolve.
    */
   private normalizeDocstrings(): void {
+    if (NORMALIZED.has(this.crate)) return;
+    NORMALIZED.add(this.crate);
     const items = this.crate.index as Record<string, unknown>;
     for (const key of Object.keys(items)) {
       const item = items[key] as { docs?: unknown; inner?: Record<string, unknown> } | undefined;
@@ -1109,9 +1135,9 @@ export class RustdocGenerator {
    * `item.links`, headings pushed down `demote` levels so they nest under
    * the page heading that introduces the item.
    */
-  private docsFor(item: Item, demote: number): string {
+  private docsFor(item: Item, demote: number, strip: readonly string[] = []): string {
     if (!item.docs) return "";
-    const cacheKey = `${String(item.id)}:${demote}`;
+    const cacheKey = `${String(item.id)}:${demote}:${strip.join(",")}`;
     const cached = this.docsCache.get(cacheKey);
     if (cached !== undefined) return cached;
     const links = item.links;
@@ -1121,14 +1147,33 @@ export class RustdocGenerator {
       if (id === undefined) return this.resolveRelativeDocLink(item, key);
       return this.resolveIdUrl(id);
     });
-    const out = demoteHeadings(resolved, demote);
+    let body = resolved;
+    for (const name of strip) body = takeSection(body, name).rest;
+    const out = demoteHeadings(body, demote);
     this.docsCache.set(cacheKey, out);
     return out;
   }
 
+  /**
+   * Docstring sections an item page shows as callouts (and therefore
+   * removes from the body): `# Panics` / `# Errors` for functions and
+   * `# Safety` for unsafe functions and traits.
+   */
+  private calloutSections(item: Item): string[] {
+    const out: string[] = [];
+    if ("function" in item.inner) out.push("Panics", "Errors");
+    if (this.isUnsafeItem(item)) out.push("Safety");
+    return out;
+  }
+
   /** Append an item's docs (preceded by a blank line) when it has any. */
-  private pushDocs(sections: string[], item: Item, demote: number): void {
-    const docs = this.docsFor(item, demote);
+  private pushDocs(
+    sections: string[],
+    item: Item,
+    demote: number,
+    strip: readonly string[] = []
+  ): void {
+    const docs = this.docsFor(item, demote, strip);
     if (docs) {
       sections.push("");
       sections.push(docs);
@@ -1186,7 +1231,11 @@ export class RustdocGenerator {
       for (const id of impl.inner.impl.items) {
         const child = this.getItem(id);
         if (!child) continue;
-        if (isTrait && !child.docs) continue; // undocumented trait-impl members are not rendered
+        // Mirrors renderImpl: trait impls show documented methods only
+        // (their associated items go in an un-anchored code block); inherent
+        // impls show methods and associated constants.
+        if (isTrait && (!child.docs || !("function" in child.inner))) continue;
+        if (!isTrait && "assoc_type" in child.inner) continue;
         member(child);
       }
     }
@@ -1456,34 +1505,54 @@ export class RustdocGenerator {
 
   /**
    * Renders the "Implementations" section of a struct / enum / union page:
-   * inherent methods and trait implementations, in Tabs when both exist.
+   * inherent impls (every method), trait impls (each with its header, so
+   * marker impls like `Copy` show, plus associated items and documented
+   * methods) and the auto traits. Inherent and trait impls go in Tabs when
+   * both exist.
    */
   private renderImplementations(page: PageEntry): string {
     const impls = this.getImplementations(page.item);
-    if (impls.length === 0) return "";
+    const auto = this.renderAutoTraits(page.item);
+    if (impls.length === 0 && !auto) return "";
     const sections: string[] = ["## Implementations", ""];
 
     const inherentImpls = impls.filter((impl) => "impl" in impl.inner && !impl.inner.impl.trait);
     const traitImpls = impls.filter((impl) => "impl" in impl.inner && impl.inner.impl.trait);
+    const render = (list: Item[]): string =>
+      list.map((impl) => this.renderImpl(impl, page.item, page.gates)).join("\n\n");
+    const traitBody = [render(traitImpls), auto].filter(Boolean).join("\n\n");
 
-    if (this.options.useTabs && inherentImpls.length > 0 && traitImpls.length > 0) {
+    if (this.options.useTabs && inherentImpls.length > 0 && traitBody) {
       const tabContents = new Map<string, string>();
-      tabContents.set(
-        "Methods",
-        inherentImpls.map((impl) => this.renderImpl(impl, page.item, page.gates)).join("\n\n")
-      );
-      tabContents.set(
-        "Trait Implementations",
-        traitImpls.map((impl) => this.renderImpl(impl, page.item, page.gates)).join("\n\n")
-      );
+      tabContents.set("Methods", render(inherentImpls));
+      tabContents.set("Trait Implementations", traitBody);
       sections.push(renderTabs(["Methods", "Trait Implementations"], tabContents));
     } else {
-      for (const impl of impls) {
-        sections.push(this.renderImpl(impl, page.item, page.gates));
+      for (const body of [render(inherentImpls), traitBody]) {
+        if (!body) continue;
+        sections.push(body);
         sections.push("");
       }
     }
     return sections.join("\n");
+  }
+
+  /**
+   * "Auto Trait Implementations" for a type: rustdoc's synthetic impls
+   * (`Send`, `Sync`, `Unpin`, ...), negative ones as `!Send`.
+   */
+  private renderAutoTraits(item: Item): string {
+    const impls = this.implIdsOf(item)
+      .map((id) => this.getItem(id))
+      .filter((i): i is Item => i !== undefined && "impl" in i.inner && i.inner.impl.is_synthetic);
+    const names: string[] = [];
+    for (const impl of impls) {
+      if (!("impl" in impl.inner) || !impl.inner.impl.trait) continue;
+      const name = getPathName(impl.inner.impl.trait).split("::").pop() ?? "";
+      names.push(inlineCode(`${impl.inner.impl.is_negative ? "!" : ""}${name}`));
+    }
+    if (names.length === 0) return "";
+    return `### Auto Trait Implementations\n\n${names.join(" · ")}`;
   }
 
   /**
@@ -1891,7 +1960,7 @@ export class RustdocGenerator {
     sections.push(formatFunctionSignature(name, fn));
     sections.push("```");
 
-    this.pushDocs(sections, item, 2);
+    this.pushDocs(sections, item, 2, this.calloutSections(item));
 
     return sections.join("\n");
   }
@@ -1931,7 +2000,7 @@ export class RustdocGenerator {
     sections.push(formatStructSignature(name, struct));
     sections.push("```");
 
-    this.pushDocs(sections, item, 2);
+    this.pushDocs(sections, item, 2, this.calloutSections(item));
 
     // Render fields
     if (isPlainStruct(struct.kind)) {
@@ -1983,7 +2052,7 @@ export class RustdocGenerator {
     sections.push(formatUnionSignature(name, union));
     sections.push("```");
 
-    this.pushDocs(sections, item, 2);
+    this.pushDocs(sections, item, 2, this.calloutSections(item));
 
     // Render fields
     if (union.fields.length > 0) {
@@ -2043,7 +2112,7 @@ export class RustdocGenerator {
     sections.push(formatEnumSignature(name, enumDef));
     sections.push("```");
 
-    this.pushDocs(sections, item, 2);
+    this.pushDocs(sections, item, 2, this.calloutSections(item));
 
     // Render variants
     if (enumDef.variants.length > 0) {
@@ -2194,31 +2263,104 @@ export class RustdocGenerator {
     sections.push(formatTraitSignature(name, trait));
     sections.push("```");
 
-    this.pushDocs(sections, item, 2);
+    this.pushDocs(sections, item, 2, this.calloutSections(item));
 
-    // Render required methods
-    const methods = trait.items
+    const members = trait.items
       .map((id) => this.getItem(id))
-      .filter((i): i is Item => i !== undefined && "function" in i.inner);
-
-    if (methods.length > 0) {
+      .filter((i): i is Item => i !== undefined);
+    const anchors = this.anchorsFor(item);
+    const groups: [string, Item[]][] = [
+      ["Associated Types", members.filter((m) => "assoc_type" in m.inner)],
+      ["Associated Constants", members.filter((m) => "assoc_const" in m.inner)],
+      [
+        "Required Methods",
+        members.filter((m) => "function" in m.inner && !m.inner.function.has_body),
+      ],
+      [
+        "Provided Methods",
+        members.filter((m) => "function" in m.inner && m.inner.function.has_body),
+      ],
+    ];
+    for (const [title, group] of groups) {
+      if (group.length === 0) continue;
       sections.push("");
-      sections.push("### Required Methods");
+      sections.push(`### ${title}`);
       sections.push("");
-      const anchors = this.anchorsFor(item);
-      for (const method of methods) {
-        if (!("function" in method.inner)) continue;
-        sections.push(this.memberHeading(method.name ?? "", anchors.get(String(method.id))));
+      for (const member of group) {
+        sections.push(this.memberHeading(member.name ?? "", anchors.get(String(member.id))));
         sections.push("");
         sections.push("```rust");
-        sections.push(formatFunctionSignature(method.name ?? "", method.inner.function));
+        sections.push(this.formatMemberSignature(member));
         sections.push("```");
-        this.pushDocs(sections, method, 4);
+        this.pushDocs(sections, member, 4);
         sections.push("");
       }
     }
 
+    const implementors = this.renderImplementors(trait.implementations);
+    if (implementors) {
+      sections.push("");
+      sections.push("### Implementors");
+      sections.push("");
+      sections.push(implementors);
+    }
+
     return sections.join("\n");
+  }
+
+  /**
+   * Signature of a trait or impl member: a method, `type Name: Bounds = T;`
+   * or `const NAME: T = value;`.
+   */
+  private formatMemberSignature(member: Item): string {
+    const name = member.name ?? "";
+    if ("function" in member.inner) return formatFunctionSignature(name, member.inner.function);
+    if ("assoc_type" in member.inner) {
+      const at = member.inner.assoc_type;
+      const bounds = at.bounds.map((b) => formatGenericBound(b)).filter(Boolean);
+      const where = at.generics.where_predicates.length > 0 ? " where ..." : "";
+      return (
+        `type ${name}${formatGenerics(at.generics)}` +
+        (bounds.length > 0 ? `: ${bounds.join(" + ")}` : "") +
+        (at.type ? ` = ${formatType(at.type)}` : "") +
+        `${where};`
+      );
+    }
+    if ("assoc_const" in member.inner) {
+      const ac = member.inner.assoc_const as { type: Type; value?: string | null };
+      return `const ${name}: ${formatType(ac.type)}${ac.value != null ? ` = ${ac.value}` : ""};`;
+    }
+    return name;
+  }
+
+  /**
+   * Bullet list of the types implementing a trait, linked to their pages
+   * when they have one.
+   */
+  private renderImplementors(implIds: Id[]): string {
+    const lines: string[] = [];
+    const seen = new Set<string>();
+    for (const implId of implIds) {
+      const impl = this.getItem(implId);
+      if (!impl || !("impl" in impl.inner)) continue;
+      const implDef = impl.inner.impl;
+      if (implDef.is_synthetic) continue;
+      // Name the implementing type as its page does (`Circle`, not the
+      // `shapes::Circle` path the impl happened to be written with).
+      const forPath = "resolved_path" in implDef.for ? implDef.for.resolved_path : undefined;
+      const target = forPath
+        ? (getPathName(forPath).split("::").pop() ?? "") + formatGenericArgs(forPath.args)
+        : formatType(implDef.for);
+      const key = `${implDef.is_negative ? "!" : ""}${target}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const href = forPath ? this.resolveIdUrl(forPath.id) : null;
+      const label = inlineCode(key);
+      lines.push(
+        `- ${href ? `[${label}](${href})` : label}${implDef.blanket_impl ? " (blanket)" : ""}`
+      );
+    }
+    return lines.sort((a, b) => a.localeCompare(b)).join("\n");
   }
 
   /**
@@ -2249,7 +2391,7 @@ export class RustdocGenerator {
     sections.push(`type ${name}${formatGenerics(alias.generics)} = ${formatType(alias.type)};`);
     sections.push("```");
 
-    this.pushDocs(sections, item, 2);
+    this.pushDocs(sections, item, 2, this.calloutSections(item));
 
     return sections.join("\n");
   }
@@ -2305,7 +2447,7 @@ export class RustdocGenerator {
       sections.push("```");
     }
 
-    this.pushDocs(sections, item, 2);
+    this.pushDocs(sections, item, 2, this.calloutSections(item));
 
     return sections.join("\n");
   }
@@ -2362,7 +2504,7 @@ export class RustdocGenerator {
       }
     }
 
-    this.pushDocs(sections, item, 2);
+    this.pushDocs(sections, item, 2, this.calloutSections(item));
 
     return sections.join("\n");
   }
@@ -2431,112 +2573,65 @@ export class RustdocGenerator {
       sections.push("");
     }
 
-    // Render impl methods, each under its own anchored heading so it shows
-    // in the table of contents and intra-doc links can target it.
-    const anchors = owner ? this.anchorsFor(owner) : new Map<string, string>();
-    for (const methodId of implDef.items) {
-      const method = this.getItem(methodId);
-      if (!method || !("function" in method.inner)) continue;
-      const anchor = anchors.get(String(method.id));
-      if (implDef.trait && anchor === undefined) continue;
+    const children = implDef.items
+      .map((id) => this.getItem(id))
+      .filter((i): i is Item => i !== undefined);
 
-      sections.push(this.memberHeading(method.name ?? "", anchor));
+    // Associated types and constants of a trait impl, as one code block.
+    const assoc = children.filter((c) => "assoc_type" in c.inner || "assoc_const" in c.inner);
+    if (implDef.trait && assoc.length > 0) {
+      sections.push("```rust");
+      for (const member of assoc) sections.push(this.formatMemberSignature(member));
+      sections.push("```");
+      sections.push("");
+    }
+
+    // Methods, each under its own anchored heading so it shows in the table
+    // of contents and intra-doc links can target it. Trait-impl methods are
+    // shown only when documented (the trait's page documents the rest).
+    const anchors = owner ? this.anchorsFor(owner) : new Map<string, string>();
+    for (const member of children) {
+      const anchor = anchors.get(String(member.id));
+      if (implDef.trait && anchor === undefined) continue;
+      if (!implDef.trait && !("function" in member.inner) && !("assoc_const" in member.inner)) {
+        continue;
+      }
+      if (implDef.trait && !("function" in member.inner)) continue;
+
+      sections.push(this.memberHeading(member.name ?? "", anchor));
       sections.push("");
       sections.push("```rust");
-      sections.push(formatFunctionSignature(method.name ?? "", method.inner.function));
+      sections.push(this.formatMemberSignature(member));
       sections.push("```");
-      this.pushDocs(sections, method, 4);
+      this.pushDocs(sections, member, 4);
       sections.push("");
     }
 
     return sections.join("\n");
   }
 
-  /**
-   * Check if an implementation should be excluded from documentation.
-   *
-   * @param impl - The implementation item to check
-   * @returns true if the impl should be excluded, false if it should be included
-   */
-  private shouldExcludeImpl(impl: Item): boolean {
-    if (!("impl" in impl.inner)) return true;
-
-    const implDef = impl.inner.impl;
-
-    // FILTER 1: Blanket implementations
-    // Generic impls like `impl<T> From<T> for T` that apply to all types
-    if (implDef.blanket_impl) return true;
-
-    // FILTER 2: Synthetic implementations
-    // Auto-generated impls for auto traits like Send, Sync, Unpin
-    if (implDef.is_synthetic) return true;
-
-    // FILTER 3: Empty external trait implementations
-    // Trait impls with no local method overrides (all defaults)
-    if (implDef.trait && implDef.items.length === 0) return true;
-
-    return false;
+  /** Impl ids recorded on a struct, enum or union. */
+  private implIdsOf(item: Item): Id[] {
+    if ("struct" in item.inner) return item.inner.struct.impls;
+    if ("enum" in item.inner) return item.inner.enum.impls;
+    if ("union" in item.inner) return item.inner.union.impls;
+    return [];
   }
 
   /**
-   * Check if a trait implementation has at least one documented method.
-   *
-   * @param impl - The implementation item to check
-   * @returns true if the impl has documented methods or is an inherent impl
-   */
-  private hasDocumentedMethods(impl: Item): boolean {
-    if (!("impl" in impl.inner)) return false;
-
-    const implDef = impl.inner.impl;
-
-    // Inherent impls (no trait) are always included
-    if (!implDef.trait) return true;
-
-    // For trait impls, require at least one documented method
-    return implDef.items.some((methodId) => {
-      const method = this.getItem(methodId);
-      return method?.docs !== undefined;
-    });
-  }
-
-  /**
-   * Gets all relevant implementations for a type (struct, enum, or union).
-   *
-   * This method retrieves and filters implementations to show only the most
-   * useful ones in the documentation. The filtering removes:
-   *
-   * - **Blanket implementations**: Generic impls like `impl<T> From<T> for T`
-   * - **Synthetic implementations**: Compiler-generated auto trait impls
-   * - **Empty external trait impls**: Trait impls using only default methods
-   * - **Undocumented trait impls**: Trait impls without any documented methods
-   *
-   * Inherent impls (the type's own methods) are always included.
-   *
-   * @param item - The type item (struct, enum, or union) to get implementations for
-   * @returns Array of impl Items that passed all filters
+   * The implementations rendered on a type's page: inherent impls and trait
+   * impls, without blanket impls (`impl<T> From<T> for T`, noise on every
+   * type) and synthetic auto-trait impls (listed compactly instead, see
+   * {@link renderAutoTraits}).
    */
   private getImplementations(item: Item): Item[] {
-    // Extract impl IDs from the type
-    let implIds: Id[] = [];
-    if ("struct" in item.inner) implIds = item.inner.struct.impls;
-    else if ("enum" in item.inner) implIds = item.inner.enum.impls;
-    else if ("union" in item.inner) implIds = item.inner.union.impls;
-
     const results: Item[] = [];
-
-    for (const implId of implIds) {
+    for (const implId of this.implIdsOf(item)) {
       const impl = this.getItem(implId);
-      if (!impl) continue;
-
-      // Apply exclusion filters
-      if (this.shouldExcludeImpl(impl)) continue;
-
-      // Check for documented methods (trait impls only)
-      if (!this.hasDocumentedMethods(impl)) continue;
-
+      if (!impl || !("impl" in impl.inner)) continue;
+      if (impl.inner.impl.blanket_impl || impl.inner.impl.is_synthetic) continue;
       results.push(impl);
     }
-
     return results;
   }
 

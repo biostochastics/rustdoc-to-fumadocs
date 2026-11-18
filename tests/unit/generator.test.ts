@@ -238,6 +238,19 @@ describe("sanitizeDocstring", () => {
     expect(twice).toBe(once);
   });
 
+  it("tags bare and rust,directive fences as rust", () => {
+    expect(sanitizeDocstring("```\nlet a = 1;\n```")).toBe("```rust\nlet a = 1;\n```");
+    expect(sanitizeDocstring("```rust,ignore\nlet a = 1;\n```")).toBe(
+      '```rust title="ignore"\nlet a = 1;\n```'
+    );
+    expect(sanitizeDocstring("```text\n# not hidden\n```")).toBe("```text\n# not hidden\n```");
+  });
+
+  it("drops hidden doctest lines and unescapes ##", () => {
+    const src = "```\n# use x::Y;\n#\nlet a = Y;\n#[derive(Debug)]\n## shown\n```";
+    expect(sanitizeDocstring(src)).toBe("```rust\nlet a = Y;\n#[derive(Debug)]\n# shown\n```");
+  });
+
   it("handles empty and null inputs gracefully", () => {
     expect(sanitizeDocstring("")).toBe("");
     expect(sanitizeDocstring(undefined as unknown as string)).toBe(undefined as unknown as string);

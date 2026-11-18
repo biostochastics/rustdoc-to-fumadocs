@@ -221,6 +221,29 @@ pub fn plain_only() {}
 #[cfg(feature = "fancy")]
 pub struct FancyOnly;
 
+/// Divides two numbers.
+///
+/// # Panics
+///
+/// Panics when `b` is zero and `strict` is set.
+///
+/// # Errors
+///
+/// Returns [`ParseFailure`] when the division is inexact.
+///
+/// # Examples
+///
+/// ```
+/// assert_eq!(kitchen_sink::divide(6, 3, false), Ok(2));
+/// ```
+pub fn divide(a: u32, b: u32, strict: bool) -> Result<u32, ParseFailure> {
+    if b == 0 {
+        assert!(!strict, "division by zero");
+        return Err(ParseFailure);
+    }
+    if a % b == 0 { Ok(a / b) } else { Err(ParseFailure) }
+}
+
 /// A unit-style constant.
 pub const ANSWER: u32 = 42;
 
