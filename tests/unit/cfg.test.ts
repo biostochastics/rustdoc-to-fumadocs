@@ -89,3 +89,14 @@ describe("describeCfgs / requiredFeatures", () => {
     );
   });
 });
+
+it("collects nested alternatives once while preserving the selected branch's feature set", () => {
+  const alternatives: Cfg = {
+    type: "any",
+    items: [
+      { type: "flag", name: "unix" },
+      { type: "all", items: [feature("a"), { type: "any", items: [feature("b"), feature("c")] }] },
+    ],
+  };
+  expect(requiredFeatures([alternatives, feature("a")])).toEqual(["a", "b"]);
+});

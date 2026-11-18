@@ -1,31 +1,13 @@
-# Security Policy
+# Security
 
-## Supported Versions
+Report security issues privately to the maintainer by email. Include the affected version, platform, observed behavior, and impact. The maintainer aims to respond within 48 hours. The current maintenance line is 0.5.x.
 
-| Version | Supported          |
-| ------- | ------------------ |
-| 0.2.x   | :white_check_mark: |
-| < 0.2   | :x:                |
+## Input and output
 
-## Reporting a Vulnerability
+The CLI limits each JSON input to 100 MiB. It validates known rustdoc payloads, reports unsupported formats, and renders source comments as Markdown data. For untrusted crates, isolate both the Rust documentation build and the consuming site build.
 
-If you discover a security vulnerability, please:
+Use an output directory controlled by the build user. Descendant symlinks are rejected and publication uses staged files and a lock. The writer assumes other programs do not concurrently replace directories in that tree. The generated ownership manifest determines which obsolete pages may be cleaned up.
 
-1. **Do not** open a public issue
-2. Email security concerns to the maintainer
-3. Include:
-   - Description of the vulnerability
-   - Steps to reproduce
-   - Potential impact
-   - Suggested fix (if any)
+## Dependency status for 0.5.0
 
-We will respond within 48 hours and work with you to address the issue.
-
-## Security Measures
-
-This tool includes several security measures:
-
-- **Input size limits**: Maximum 100MB input file
-- **Path sanitization**: Prevents directory traversal attacks
-- **Output validation**: Ensures output stays within designated directory
-- **Recursion limits**: Prevents stack overflow attacks
+The November 17, 2026 npm audit reported zero advisories in the production dependency tree. The development tree still includes `picomatch` through test, lint, and release tools. The advisory covers the latest published release, 4.0.7. The converter uses Node's built-in glob matcher for Cargo workspace discovery. [Upstream advisory](https://github.com/advisories/GHSA-fc5q-39xc-vjpf)

@@ -112,7 +112,7 @@ describe("formatFunctionSignature", () => {
       const fn = createFunction({
         header: { abi: { C: { unwind: true } } },
       });
-      expect(formatFunctionSignature("c_unwind", fn)).toBe('extern "C" fn c_unwind()');
+      expect(formatFunctionSignature("c_unwind", fn)).toBe('extern "C-unwind" fn c_unwind()');
     });
 
     it('formats extern "system" function', () => {
@@ -126,7 +126,9 @@ describe("formatFunctionSignature", () => {
       const fn = createFunction({
         header: { abi: { System: { unwind: true } } },
       });
-      expect(formatFunctionSignature("sys_unwind", fn)).toBe('extern "system" fn sys_unwind()');
+      expect(formatFunctionSignature("sys_unwind", fn)).toBe(
+        'extern "system-unwind" fn sys_unwind()'
+      );
     });
 
     it("formats function with custom ABI", () => {

@@ -14,7 +14,7 @@ Thank you for your interest in contributing! This guide will help you get starte
 2. **Install dependencies**
 
    ```bash
-   npm install
+   npm ci
    ```
 
 3. **Run tests**
@@ -82,6 +82,8 @@ npm run test:run       # Single run
 npm run test:coverage  # With coverage
 ```
 
+Pull requests run format, lint, type, coverage and packed-CLI checks on one Node 24 Ubicloud runner. Dispatch the CI workflow manually for the additional Node, operating system, Rust producer and Fumadocs consumer matrices.
+
 ## Creating a Changeset
 
 When making user-facing changes, create a changeset:
@@ -89,6 +91,8 @@ When making user-facing changes, create a changeset:
 ```bash
 npm run changeset
 ```
+
+Use a patch for backward-compatible fixes. Use a minor version for new public functionality. During 0.x development, use a minor version for incompatible changes and describe the migration. After 1.0, incompatible changes require a major version.
 
 Follow the prompts to describe your changes. This will create a markdown file in `.changeset/` that will be used to generate the changelog.
 

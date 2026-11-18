@@ -5,70 +5,112 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  lint:
-    name: Lint
-    runs-on: ubuntu-latest
+  checks:
+    timeout-minutes: 15
+    runs-on: ubicloud-standard-2
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          node-version: 20
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
           cache: npm
       - run: npm ci
-      - run: npm run lint
-      - run: npm run format:check
-
-  typecheck:
-    name: Type Check
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - run: npm run format:check && npm run lint && npm run typecheck
+      - run: npm run test:coverage
+      - name: Build and smoke-test the packed CLI
+        run: |
+          mkdir -p "$RUNNER_TEMP/package" "$RUNNER_TEMP/consumer"
+          npm pack --pack-destination "$RUNNER_TEMP/package"
+          npm install --prefix "$RUNNER_TEMP/consumer" --no-audit --no-fund "$RUNNER_TEMP/package"/*.tgz
+          cmp llms.txt "$RUNNER_TEMP/consumer/node_modules/rustdoc-to-fumadocs/llms.txt"
+          cli="$RUNNER_TEMP/consumer/node_modules/.bin/rustdoc-to-fumadocs"
+          "$cli" --version
+          "$cli" tests/fixtures/minimal.json --list-files --json > "$RUNNER_TEMP/paths.json"
+          "$cli" tests/fixtures/minimal.json --json > "$RUNNER_TEMP/preview.json"
+          node --input-type=module <<'JS'
+          import assert from 'node:assert/strict';
+          import { readFileSync } from 'node:fs';
+          const report = (name) => JSON.parse(readFileSync(process.env.RUNNER_TEMP + '/' + name + '.json'));
+          const { paths } = report('paths');
+          assert.ok(paths.length > 0);
+          assert.deepEqual(paths, report('preview').files.map(f => f.path));
+          JS
+      - uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
+        if: github.event_name != 'pull_request'
         with:
-          node-version: 20
-          cache: npm
-      - run: npm ci
-      - run: npm run typecheck
-
+          files: coverage/lcov.info
+          fail_ci_if_error: false
   test:
-    name: Test (Node ${{ matrix.node }})
-    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch'
+    timeout-minutes: 15
+    runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
-        node: [20, 22, 24]
+        os: [ubicloud-standard-2]
+        node: [20, 22, 26]
+        include:
+          - { os: windows-latest, node: 24 }
+          - { os: macos-latest, node: 24 }
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: ${{ matrix.node }}
           cache: npm
       - run: npm ci
       - run: npm run test:run
-      - run: npm run test:coverage
-      - uses: codecov/codecov-action@v4
-        if: matrix.node == 20
-        with:
-          files: coverage/lcov.info
-          fail_ci_if_error: false
-
-  build:
-    name: Build
-    runs-on: ubuntu-latest
+  rustdoc:
+    if: github.event_name == 'workflow_dispatch'
+    timeout-minutes: 30
+    runs-on: ubicloud-standard-2
+    strategy:
+      fail-fast: false
+      matrix:
+        rust:
+          ["1.76.0", "1.80.0", "1.83.0", "1.86.0", "1.89.0", "1.92.0", "1.94.0", stable, nightly]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          node-version: 20
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
           cache: npm
       - run: npm ci
-      - run: npm run build
-      - uses: actions/upload-artifact@v4
+      - run: rustup toolchain install "${{ matrix.rust }}" --profile minimal
+      - run: RUSTDOC="$(rustup which --toolchain "${{ matrix.rust }}" rustdoc)" bash scripts/test-rust.sh
+      - run: npm run test:crates -- itoa serde_core
+        if: matrix.rust == 'stable'
+  fumadocs:
+    if: github.event_name == 'workflow_dispatch'
+    timeout-minutes: 30
+    runs-on: ubicloud-standard-2
+    strategy:
+      fail-fast: false
+      matrix:
+        major: [14, 15, 16, latest]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          name: dist
-          path: dist/
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci && npm run build
+      - run: npm run test:fumadocs -- "${{ matrix.major }}"

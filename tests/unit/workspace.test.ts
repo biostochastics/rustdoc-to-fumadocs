@@ -2,7 +2,7 @@
  * Unit tests for workspace.ts — Cargo workspace discovery and rendering.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { mkdtemp, rm, writeFile, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -81,6 +81,27 @@ describe("loadWorkspace", () => {
 
     const ws = await loadWorkspace(join(tmp, "Cargo.toml"));
     expect(ws.members.map((m) => m.name).sort()).toEqual(["alpha", "beta", "gamma"]);
+  });
+
+  it("finds renamed binary JSON without Cargo and preserves library precedence", async () => {
+    vi.stubEnv("PATH", "");
+    try {
+      await writeFile(join(tmp, "Cargo.toml"), '[workspace]\nmembers=["app"]\n');
+      const dir = join(tmp, "app");
+      await mkdir(join(dir, "src"), { recursive: true });
+      await writeFile(
+        join(dir, "Cargo.toml"),
+        '[package]\nname="tool"\nversion="0.1.0"\n[[bin]]\nname="hidden"\ndoc=false\n[[bin]]\nname="public-tool"\npath="src/main.rs"\n'
+      );
+      await writeFile(join(dir, "src/main.rs"), "fn main() {}");
+      const target = async () =>
+        (await loadWorkspace(join(tmp, "Cargo.toml"))).members[0].crateName;
+      expect(await target()).toBe("public_tool");
+      await writeFile(join(dir, "src/lib.rs"), "");
+      expect(await target()).toBe("tool");
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 
   it("applies the exclude list", async () => {
@@ -181,4 +202,20 @@ describe("renderWorkspaceIndex", () => {
     const index = renderWorkspaceIndex("ws", [{ name: "alpha", path: "/x/alpha" }], "/api/");
     expect(index).toContain("[`alpha`](/api/alpha)");
   });
+});
+
+it("discovers the root package, custom library target and excluded subtree", async () => {
+  await writeFile(
+    join(tmp, "Cargo.toml"),
+    '[package]\nname="umbrella"\nversion="0.1.0"\n[workspace]\nmembers=["libs/*"]\nexclude=["libs/skip*"]\n'
+  );
+  await writeMember(join(tmp, "libs/alpha"), "alpha");
+  await writeFile(
+    join(tmp, "libs/alpha/Cargo.toml"),
+    '[package]\nname="alpha"\nversion="0.1.0"\n[lib]\nname="public_api"\n'
+  );
+  await writeMember(join(tmp, "libs/skip-me"), "skip-me");
+  const ws = await loadWorkspace(join(tmp, "Cargo.toml"));
+  expect(ws.members.map((m) => m.name).sort()).toEqual(["alpha", "umbrella"]);
+  expect(ws.members.find((m) => m.name === "alpha")?.crateName).toBe("public_api");
 });

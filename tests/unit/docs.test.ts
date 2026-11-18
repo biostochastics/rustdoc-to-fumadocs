@@ -4,14 +4,43 @@
 
 import { describe, it, expect } from "vitest";
 import {
+  createMarkdownParser,
   rewriteDocLinks,
   demoteHeadings,
   takeSection,
   summaryLine,
+  summaryMarkdown,
+  sanitizeDocstring,
   splitFences,
   looksLikeRustPath,
   type LinkResolver,
 } from "../../src/docs.js";
+
+it("isolates mutating Markdown transforms and bounds each render's parser cache", () => {
+  const parse = createMarkdownParser();
+  const source = "# Original heading";
+  const original = parse(source);
+  expect(demoteHeadings(source, 2, parse)).toContain("### Original heading");
+  expect(parse(source)).toBe(original);
+  expect(original.children[0]).toMatchObject({ type: "heading", depth: 1 });
+  expect(createMarkdownParser()(source)).not.toBe(original);
+
+  const tableSource = "| A | B |\n| :- | -: |\n| x | y |";
+  const table = parse(tableSource, true).children[0];
+  if (table.type !== "table") throw new Error("Expected a GFM table");
+  table.align![0] = null;
+  table.position!.start.line = 42;
+  expect(parse(tableSource).children[0]).toMatchObject({
+    align: ["left", "right"],
+    position: { start: { line: 1 } },
+  });
+
+  const large = "x".repeat(65 * 1024);
+  expect(parse(large)).not.toBe(parse(large));
+  // Five individually cacheable documents exceed the aggregate source budget.
+  for (let i = 0; i < 5; i++) parse("x".repeat(60 * 1024) + i);
+  expect(parse(source)).not.toBe(original);
+});
 
 const links: Record<string, string | null> = {
   "`Foo`": "/api/c/Foo",
@@ -101,7 +130,7 @@ describe("splitFences", () => {
 describe("demoteHeadings", () => {
   it("pushes headings down and leaves code alone", () => {
     expect(demoteHeadings("# A\ntext\n```\n# not a heading\n```\n## B", 2)).toBe(
-      "### A\ntext\n```\n# not a heading\n```\n#### B"
+      "### A\n\ntext\n\n```\n# not a heading\n```\n\n#### B"
     );
   });
 
@@ -128,8 +157,133 @@ describe("takeSection", () => {
 
 describe("summaryLine", () => {
   it("reduces links to their text", () => {
-    expect(summaryLine("See [`Foo`](/a) and [b][c] and [`D`].\nmore")).toBe(
-      "See `Foo` and b and `D`."
+    expect(summaryLine("See [`Foo`](/a) and [b][c] and `D`.\nmore\n\n[c]: /c")).toBe(
+      "See Foo and b and D. more"
     );
   });
+});
+
+it("keeps standalone opening paragraphs equivalent to full-document summaries", () => {
+  const lead = "Read the `first`\nparagraph.";
+  const body = "\n\n# Examples\n\n```rust\nlet x = 0;\n```";
+  const parse = createMarkdownParser();
+  for (const eol of ["\n", "\r\n"]) {
+    const first = lead.replaceAll("\n", eol);
+    const doc = first + body.replaceAll("\n", eol);
+    const paragraphOnly = (source: string) => {
+      expect(source).toBe(first);
+      return parse(source);
+    };
+    const original = structuredClone(parse(first));
+    expect(summaryLine(doc, paragraphOnly)).toBe("Read the first paragraph.");
+    expect(summaryMarkdown(doc, paragraphOnly)).toBe("Read the `first` paragraph.");
+    expect(parse(first)).toEqual(original);
+  }
+
+  for (const prefix of ["Heading\n======", "Column\n:-----", "# Heading", "    code"]) {
+    const doc = prefix + "\n\nSee [the guide][guide].\n\n[guide]: /guide";
+    expect(summaryLine(doc)).toBe("See the guide.");
+    expect(summaryMarkdown(doc)).toBe("See [the guide](/guide).");
+  }
+  const referenced = "See [the guide].\n\n[the guide]: /guide";
+  expect(summaryMarkdown(referenced)).toBe("See [the guide](/guide).");
+});
+
+it("preserves whitespace, autolinks and MDX escaping around ordinary sentences", () => {
+  expect(sanitizeDocstring("Returns the first value.")).toBe("Returns the first value.");
+  expect(summaryLine("Two  spaces.")).toBe("Two spaces.");
+  expect(sanitizeDocstring("Two  spaces.")).toBe("Two  spaces.");
+  expect(sanitizeDocstring("export the value")).toBe("&#x65;xport the value");
+  expect(sanitizeDocstring("www.example.org")).toContain("http://www.example.org");
+});
+
+describe("passive MDX", () => {
+  it("renders prose, email autolinks and inline code inside Markdown containers", async () => {
+    const { sanitizeDocstring } = await import("../../src/docs.js");
+    const { compileError } = await import("../helpers/mdx.js");
+    const source = [
+      "A literal {field}, <br>, <dev@example.org> and ``Option<T> and `tick` ``.",
+      "",
+      "> A nested sample",
+      ">",
+      "> ```ignore",
+      "> # use std::fmt;",
+      "> let sample = 1;",
+      "> ```",
+      "",
+      "export examples",
+      "",
+      '<Example title="Text">',
+      "",
+      "End.",
+    ].join("\n");
+    const mdx = sanitizeDocstring(source);
+    expect(await compileError(mdx)).toBeNull();
+    expect(mdx).toContain("[dev@example.org](mailto:dev@example.org)");
+    expect(mdx).toContain('> ```rust title="ignore"');
+    expect(mdx).not.toContain("use std::fmt");
+    expect(mdx).not.toMatch(/^export |^<Example/m);
+    expect(mdx).toContain("\\{field}");
+  });
+
+  it("keeps section bodies intact around code and closed ATX headings", () => {
+    const original =
+      "Intro.\n\n# Safety ###\n\nFull description.\n\n```text\n# Examples\n```\n\nStill applies.\n\n# Next\n\nok";
+    const result = takeSection(original, "Safety");
+    expect(result.section).toBe("Full description.\n\n```text\n# Examples\n```\n\nStill applies.");
+    expect(result.rest).toBe("Intro.\n\n# Next\n\nok");
+  });
+
+  it("preserves section fragments and recognizes indented definitions on repeated runs", () => {
+    const fn: LinkResolver = (key) => (key.startsWith("Widget") ? "/api/Widget" : undefined);
+    const raw = "  [w]: Widget#examples\n\nRead [w] and [the docs](Widget#examples).";
+    for (let i = 0; i < 2; i++)
+      expect(rewriteDocLinks(raw, fn)).toBe(
+        "  [w]: /api/Widget#examples\n\nRead [w] and [the docs](/api/Widget#examples)."
+      );
+    expect(rewriteDocLinks("> ```text\n> [w]: Widget\n> ```\n\n[Widget].", fn)).toContain(
+      "[Widget](/api/Widget)"
+    );
+  });
+
+  it("uses a complete prose paragraph for summaries and resolves its definitions", async () => {
+    const { summaryMarkdown, sanitizeDocstring } = await import("../../src/docs.js");
+    const { compileError } = await import("../helpers/mdx.js");
+    const summary = summaryMarkdown(
+      sanitizeDocstring(
+        "# Overview\n\n[Read the\nmanual][ref] with {labels}.\n\n[ref]: https://example.org"
+      )
+    );
+    expect(summary).toContain("[Read the manual](https://example.org)");
+    expect(await compileError("- Item — " + summary)).toBeNull();
+    expect(summaryMarkdown("```rust\nfn f() {}\n```")).toBe("");
+  });
+});
+
+it("preserves HTML table contents, badge links and accessible image descriptions", async () => {
+  const { sanitizeDocstring } = await import("../../src/docs.js");
+  const { compileError } = await import("../helpers/mdx.js");
+  const raw =
+    '<table><tr><td><a href="https://example.org"><img src="./badge.svg" alt="Build status"></a><br>Latest</td></tr></table>';
+  const mdx = sanitizeDocstring(raw);
+  expect(mdx).toContain(
+    '<a href="https://example.org"><img src="./badge.svg" alt="Build status" /></a>'
+  );
+  expect(mdx).toContain("<br />Latest");
+  expect(await compileError(mdx)).toBeNull();
+});
+
+it("drops unavailable Rust reference definitions without leaving dead relative links", () => {
+  const md = "Use [`Vec<Arm>`] or [a list][`Vec<Arm>`].\n\n[`Vec<Arm>`]: Arm";
+  const out = rewriteDocLinks(md, () => undefined);
+  expect(out.trim()).toBe("Use `Vec<Arm>` or a list.");
+});
+
+it("renders only supported URL schemes in HTML and Markdown", async () => {
+  const { sanitizeDocstring } = await import("../../src/docs.js");
+  const out = sanitizeDocstring(
+    '[edit](editor:open). <a href="editor:open">Open</a>. [site](https://example.org)'
+  );
+  expect(out).not.toContain("editor:");
+  expect(out).toContain("[site](https://example.org)");
 });

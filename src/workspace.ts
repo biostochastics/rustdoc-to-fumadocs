@@ -7,8 +7,10 @@
  * subdirectories plus a top-level `meta.json` linking them.
  */
 
-import { readFile, readdir } from "node:fs/promises";
-import { join, resolve, sep, isAbsolute } from "node:path";
+import { readFile, access, readdir } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+import { dirname, join, resolve, relative, matchesGlob } from "node:path";
 import { parse as parseToml } from "smol-toml";
 import { stringify as stringifyYaml } from "yaml";
 import { RustdocError, ErrorCode } from "./errors.js";
@@ -21,6 +23,10 @@ export interface WorkspaceMember {
   name: string;
   /** Absolute path to the member's directory (which contains its Cargo.toml). */
   path: string;
+  /** Rustdoc filename stem for a renamed library or binary target. */
+  crateName?: string;
+  /** Reachable landing page, or null when no pages were emitted. */
+  landingUrl?: string | null;
   /**
    * False when the package cannot be published (`publish = false` or
    * `publish = []`, directly or through `publish.workspace = true`).
@@ -37,6 +43,8 @@ export interface Workspace {
   rootDir: string;
   /** Discovered members. Exclude patterns have already been applied. */
   members: WorkspaceMember[];
+  targetDirectory?: string;
+  skipped?: { name: string; reason: string }[];
 }
 
 function tomlStringArray(value: unknown): string[] {
@@ -44,50 +52,94 @@ function tomlStringArray(value: unknown): string[] {
   return value.filter((v): v is string => typeof v === "string");
 }
 
-/**
- * Expand one `[workspace].members` pattern. Supports the literal form
- * ("crates/fluxid") and a single trailing `*` segment ("crates/*"), which
- * Cargo itself supports and covers effectively all real-world workspaces.
- * More elaborate glob forms (brace expansion, `**`) are uncommon in
- * workspace manifests and intentionally not supported here.
- */
-async function expandMemberPattern(rootDir: string, pattern: string): Promise<string[]> {
-  // Refuse absolute paths: they'd escape the workspace root, which is
-  // never what Cargo itself allows. Treat as an unrecognized pattern.
-  if (isAbsolute(pattern)) return [];
-  if (!pattern.includes("*")) {
-    return [resolve(rootDir, pattern)];
-  }
-  if (pattern.indexOf("*") !== pattern.lastIndexOf("*")) {
-    // Multiple stars — skip rather than guess at semantics.
-    return [];
-  }
-  // Split on the last path separator. The `*` must live in the final segment;
-  // patterns like `*/foo` are not supported (Cargo doesn't permit them either
-  // in practice). The parent directory is everything before the final "/";
-  // within that directory we match entries whose name matches the prefix/
-  // suffix around the star in the final segment.
-  const lastSep = pattern.lastIndexOf("/");
-  const lastSegment = lastSep === -1 ? pattern : pattern.slice(lastSep + 1);
-  const parentRel = lastSep === -1 ? "." : pattern.slice(0, lastSep);
-  if (lastSegment.includes("*") === false) return [];
-  const starIdx = lastSegment.indexOf("*");
-  const segPrefix = lastSegment.slice(0, starIdx);
-  const segSuffix = lastSegment.slice(starIdx + 1);
-  const parentDir = resolve(rootDir, parentRel);
-  let entries: string[];
+const cargoExec = promisify(execFile);
+
+interface CargoPackage {
+  id: string;
+  name: string;
+  manifest_path: string;
+  publish: string[] | null;
+  targets: { name: string; kind: string[]; doc: boolean }[];
+}
+
+/** Cargo resolves implicit path dependencies, inherited settings, targets and all workspace globs. */
+export async function cargoWorkspace(manifest: string): Promise<Workspace | undefined> {
   try {
-    entries = await readdir(parentDir);
+    const { stdout } = await cargoExec(
+      "cargo",
+      ["metadata", "--no-deps", "--offline", "--format-version", "1", "--manifest-path", manifest],
+      { cwd: dirname(manifest), maxBuffer: 32 * 1024 * 1024 }
+    );
+    const data = JSON.parse(stdout) as {
+      workspace_root: string;
+      target_directory: string;
+      workspace_members: string[];
+      packages: CargoPackage[];
+    };
+    const ids = new Set(data.workspace_members);
+    const members = data.packages
+      .filter((p) => ids.has(p.id))
+      .map((p) => {
+        const targets = p.targets.filter((t) => t.doc);
+        const target =
+          targets.find((t) =>
+            t.kind.some((k) =>
+              ["lib", "rlib", "dylib", "cdylib", "staticlib", "proc-macro"].includes(k)
+            )
+          ) ??
+          targets.find((t) => t.kind.includes("bin") && t.name === p.name) ??
+          targets.find((t) => t.kind.includes("bin"));
+        return {
+          name: p.name,
+          crateName: target?.name.replace(/-/g, "_"),
+          path: dirname(p.manifest_path),
+          publish: p.publish === null || p.publish.length > 0,
+        };
+      });
+    return { rootDir: data.workspace_root, targetDirectory: data.target_directory, members };
   } catch {
-    return [];
+    // Prebuilt JSON can be converted on hosts without a working Cargo installation.
+    return undefined;
   }
-  const matches: string[] = [];
-  for (const entry of entries) {
-    if (segPrefix && !entry.startsWith(segPrefix)) continue;
-    if (segSuffix && !entry.endsWith(segSuffix)) continue;
-    matches.push(resolve(parentDir, entry));
+}
+
+/** Expand directory patterns when prebuilt JSON is shipped without Cargo. */
+async function manifestDirectories(
+  root: string,
+  pattern: string,
+  excludes: string[]
+): Promise<string[]> {
+  const parts = pattern.split("/");
+  let directories = [root];
+  for (const part of parts) {
+    if (!part || part === ".") continue;
+    if (!/[?*[]/.test(part)) {
+      directories = directories.map((d) => resolve(d, part));
+      continue;
+    }
+    const next = new Set<string>();
+    const pending = [...directories];
+    if (part === "**") pending.forEach((d) => next.add(d));
+    for (const dir of pending) {
+      let entries;
+      try {
+        entries = await readdir(dir, { withFileTypes: true });
+      } catch {
+        continue;
+      }
+      for (const entry of entries) {
+        if (!entry.isDirectory() || !matchesGlob(entry.name, part)) continue;
+        const path = join(dir, entry.name);
+        if (excludes.some((e) => matchesGlob(relative(root, path), e))) continue;
+        next.add(path);
+        if (part === "**") pending.push(path);
+      }
+    }
+    directories = [...next];
   }
-  return matches;
+  return directories
+    .filter((dir) => !excludes.some((e) => matchesGlob(relative(root, dir), e)))
+    .sort();
 }
 
 /** Whether a `publish` value allows publishing (`false` and `[]` do not). */
@@ -96,6 +148,49 @@ function publishable(value: unknown): boolean | undefined {
   if (value === true) return true;
   if (Array.isArray(value)) return value.length > 0;
   return undefined;
+}
+
+interface ManifestTarget {
+  name?: string;
+  path?: string;
+  doc?: boolean;
+}
+
+/** Prefer a documented library, then the package-named binary, then a declared binary. */
+export async function manifestTargetName(
+  manifest: {
+    lib?: ManifestTarget;
+    bin?: ManifestTarget[];
+    package?: { autolib?: boolean; autobins?: boolean };
+  },
+  name: string,
+  dir: string
+): Promise<string | undefined> {
+  const { lib } = manifest;
+  if (lib && lib.doc !== false)
+    return (typeof lib.name === "string" ? lib.name : name).replace(/-/g, "_");
+  if (!Array.isArray(manifest.bin)) return undefined;
+  const bins = manifest.bin.filter((b) => typeof b?.name === "string" && b.doc !== false);
+  const exists = (file: string) =>
+    access(join(dir, file)).then(
+      () => true,
+      () => false
+    );
+  if (!lib && manifest.package?.autolib !== false && (await exists("src/lib.rs")))
+    return name.replace(/-/g, "_");
+  const primary = bins.find((bin) => bin.name === name);
+  if (primary) return name.replace(/-/g, "_");
+  if (
+    manifest.package?.autobins !== false &&
+    !manifest.bin.some(
+      (b) =>
+        b?.name === name ||
+        (typeof b?.path === "string" && resolve(dir, b.path) === join(dir, "src/main.rs"))
+    ) &&
+    (await exists("src/main.rs"))
+  )
+    return name.replace(/-/g, "_");
+  return bins[0]?.name?.replace(/-/g, "_");
 }
 
 /**
@@ -107,7 +202,7 @@ function publishable(value: unknown): boolean | undefined {
 async function readMember(
   memberDir: string,
   workspacePublish: boolean | undefined
-): Promise<{ name: string; publish: boolean } | null> {
+): Promise<{ name: string; publish: boolean; crateName?: string } | null> {
   const tomlPath = join(memberDir, "Cargo.toml");
   let content: string;
   try {
@@ -132,7 +227,7 @@ async function readMember(
   const inherited =
     typeof raw === "object" && raw !== null && !Array.isArray(raw) && "workspace" in raw;
   const publish = (inherited ? workspacePublish : publishable(raw)) ?? true;
-  return { name, publish };
+  return { name, publish, crateName: await manifestTargetName(parsed, name, memberDir) };
 }
 
 /**
@@ -188,43 +283,32 @@ export async function loadWorkspace(workspaceTomlPath: string): Promise<Workspac
       }
     );
   }
+  const rootDir = dirname(resolve(workspaceTomlPath));
+  const cargo = await cargoWorkspace(resolve(workspaceTomlPath));
+  if (cargo) return cargo;
+
   const wkRec = wk as Record<string, unknown>;
   const memberPatterns = tomlStringArray(wkRec.members);
-  const wsPackage = wkRec.package;
-  const workspacePublish =
-    typeof wsPackage === "object" && wsPackage !== null
-      ? publishable((wsPackage as Record<string, unknown>).publish)
-      : undefined;
-  const excludePatterns = new Set(tomlStringArray(wkRec.exclude));
-
-  const rootDir = resolve(workspaceTomlPath, "..");
-  const rootPrefix = rootDir.endsWith(sep) ? rootDir : rootDir + sep;
-
-  const expanded: string[] = [];
+  const wsPackage = wkRec.package as { publish?: unknown } | undefined;
+  const publish = publishable(wsPackage?.publish);
+  const excludes = tomlStringArray(wkRec.exclude).map((p) => p.replace(/\/$/, ""));
+  const expanded = new Set<string>();
+  if (root.package) expanded.add(rootDir);
+  const skipped: { name: string; reason: string }[] = [];
   for (const pattern of memberPatterns) {
-    const dirs = await expandMemberPattern(rootDir, pattern);
-    for (const dir of dirs) {
-      // Cargo excludes take precedence over members. The exclude list is
-      // interpreted as literal directories here (Cargo allows globs too but
-      // they're rare in practice; we can extend if a user hits this).
-      const rel = dir.startsWith(rootPrefix) ? dir.slice(rootPrefix.length) : dir;
-      if (!excludePatterns.has(rel)) {
-        expanded.push(dir);
-      }
+    const paths = await manifestDirectories(rootDir, pattern, excludes);
+    if (!paths.length && !/[?*[]/.test(pattern) && !excludes.includes(pattern)) {
+      skipped.push({ name: pattern, reason: "workspace directory missing or excluded" });
     }
+    for (const dir of paths.sort()) expanded.add(dir);
   }
-
-  const seen = new Set<string>();
   const members: WorkspaceMember[] = [];
-  for (const memberDir of expanded) {
-    if (seen.has(memberDir)) continue;
-    seen.add(memberDir);
-    const member = await readMember(memberDir, workspacePublish);
-    if (!member) continue;
-    members.push({ name: member.name, path: memberDir, publish: member.publish });
+  for (const dir of expanded) {
+    const m = await readMember(dir, publish);
+    if (m) members.push({ ...m, path: dir });
+    else skipped.push({ name: dir, reason: "missing or invalid package manifest" });
   }
-
-  return { rootDir, members };
+  return { rootDir, members, skipped };
 }
 
 /**
@@ -236,7 +320,6 @@ export async function findMemberRustdocJson(
   crateName: string,
   targetDir: string
 ): Promise<string | null> {
-  const { access } = await import("node:fs/promises");
   const probe = async (name: string): Promise<string | null> => {
     const p = join(targetDir, "doc", `${name}.json`);
     try {
@@ -300,14 +383,15 @@ export function renderWorkspaceIndex(
     frontmatter.trimEnd(),
     "---",
     "",
-    `# ${escapeCode(workspaceName)}`,
+    `# ${workspaceName.replace(/[^\p{L}\p{N} _-]/gu, (c) => `&#${c.codePointAt(0)};`)}`,
     "",
     `This workspace contains **${members.length}** crate${members.length === 1 ? "" : "s"}:`,
     "",
   ];
   const base = baseUrl.replace(/\/+$/, "");
   for (const m of members) {
-    lines.push(`- [\`${escapeCode(m.name)}\`](${base}/${encodeURIComponent(m.name)})`);
+    const url = m.landingUrl === undefined ? `${base}/${encodeURIComponent(m.name)}` : m.landingUrl;
+    lines.push(url ? `- [\`${escapeCode(m.name)}\`](${url})` : `- \`${escapeCode(m.name)}\``);
   }
   lines.push("");
   return lines.join("\n");

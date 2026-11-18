@@ -60,6 +60,15 @@ export default tseslint.config(
     },
   },
 
+  {
+    ...tseslint.configs.disableTypeChecked,
+    files: ["tests/compat/*.mjs"],
+    languageOptions: {
+      parserOptions: { project: false },
+      globals: { process: "readonly", console: "readonly" },
+    },
+  },
+
   // Disable rules that conflict with Prettier
   eslintConfigPrettier
 );

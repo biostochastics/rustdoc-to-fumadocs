@@ -1,0 +1,319 @@
+{
+  "baseline": "959b856",
+  "platform": "Apple M4 Pro, 24 GiB, macOS 26.6.2, APFS, Node 22.17.1",
+  "method": "One warm-up followed by five measured rounds in randomized input and build order. Each CLI command uses a fresh process. Each fresh and unchanged pair shares a temporary output directory. The warm-up is excluded from the series.",
+  "series": [
+    {
+      "input": "documented",
+      "mode": "fresh",
+      "build": "baseline",
+      "wall_ms": [1348.081, 1288.57, 1279.045, 1279.696, 1274.446],
+      "peak_rss_mib": [147.71875, 145.0625, 145.953125, 146.15625, 146.9375]
+    },
+    {
+      "input": "documented",
+      "mode": "fresh",
+      "build": "optimized",
+      "wall_ms": [554.093, 491.149, 504.906, 470.627, 581.498],
+      "peak_rss_mib": [130.3125, 130.53125, 129.09375, 129.859375, 130.84375]
+    },
+    {
+      "input": "documented",
+      "mode": "preview",
+      "build": "baseline",
+      "wall_ms": [626.334, 629.015, 637.992, 635.546, 630.62],
+      "peak_rss_mib": [143.0625, 139.96875, 141.65625, 141.34375, 144.953125]
+    },
+    {
+      "input": "documented",
+      "mode": "preview",
+      "build": "optimized",
+      "wall_ms": [224.784, 227.866, 226.231, 227.96, 227.415],
+      "peak_rss_mib": [127.71875, 127.15625, 127.375, 128.015625, 128.453125]
+    },
+    {
+      "input": "documented",
+      "mode": "unchanged",
+      "build": "baseline",
+      "wall_ms": [777.941, 784.595, 781.087, 781.663, 776.703],
+      "peak_rss_mib": [147.328125, 150.203125, 147.890625, 146.59375, 149.578125]
+    },
+    {
+      "input": "documented",
+      "mode": "unchanged",
+      "build": "optimized",
+      "wall_ms": [384.074, 375.355, 381.645, 372.422, 381.211],
+      "peak_rss_mib": [130.609375, 130.84375, 131.03125, 130.421875, 130.46875]
+    },
+    {
+      "input": "minimal",
+      "mode": "fresh",
+      "build": "baseline",
+      "wall_ms": [120.989, 124.975, 122.487, 121.81, 122.552],
+      "peak_rss_mib": [76.625, 76.5, 76.140625, 75.734375, 76.9375]
+    },
+    {
+      "input": "minimal",
+      "mode": "fresh",
+      "build": "optimized",
+      "wall_ms": [117.609, 118.143, 118.3, 115.983, 118.662],
+      "peak_rss_mib": [75.0625, 75.15625, 74.921875, 75.3125, 74.5625]
+    },
+    {
+      "input": "minimal",
+      "mode": "preview",
+      "build": "baseline",
+      "wall_ms": [117.366, 118.201, 120.493, 119.796, 118.741],
+      "peak_rss_mib": [76.3125, 75.75, 75.5625, 76.15625, 75.71875]
+    },
+    {
+      "input": "minimal",
+      "mode": "preview",
+      "build": "optimized",
+      "wall_ms": [115.284, 114.214, 114.947, 113.47, 115.011],
+      "peak_rss_mib": [74.25, 74.828125, 75.328125, 74.359375, 74.421875]
+    },
+    {
+      "input": "minimal",
+      "mode": "unchanged",
+      "build": "baseline",
+      "wall_ms": [119.737, 122.069, 123.835, 121.798, 122.494],
+      "peak_rss_mib": [76.1875, 76.515625, 76.65625, 76.046875, 76.421875]
+    },
+    {
+      "input": "minimal",
+      "mode": "unchanged",
+      "build": "optimized",
+      "wall_ms": [117.851, 116.602, 119.019, 116.163, 116.642],
+      "peak_rss_mib": [75.46875, 74.296875, 74.875, 75.078125, 75.46875]
+    },
+    {
+      "input": "mixed",
+      "mode": "fresh",
+      "build": "baseline",
+      "wall_ms": [1153.976, 1156.896, 1154.939, 1147.735, 1223.254],
+      "peak_rss_mib": [306.3125, 299.375, 307.203125, 305.78125, 301.609375]
+    },
+    {
+      "input": "mixed",
+      "mode": "fresh",
+      "build": "optimized",
+      "wall_ms": [1023.681, 1060.455, 1075.615, 1028.855, 1041.657],
+      "peak_rss_mib": [284.296875, 282.25, 283.09375, 283.625, 282.0]
+    },
+    {
+      "input": "mixed",
+      "mode": "preview",
+      "build": "baseline",
+      "wall_ms": [1166.151, 1090.829, 1092.922, 1084.672, 1084.759],
+      "peak_rss_mib": [315.03125, 308.984375, 308.65625, 311.109375, 308.40625]
+    },
+    {
+      "input": "mixed",
+      "mode": "preview",
+      "build": "optimized",
+      "wall_ms": [951.897, 966.773, 969.471, 979.499, 1036.761],
+      "peak_rss_mib": [279.765625, 280.9375, 278.984375, 304.40625, 287.90625]
+    },
+    {
+      "input": "mixed",
+      "mode": "unchanged",
+      "build": "baseline",
+      "wall_ms": [1088.545, 1098.124, 1114.55, 1091.634, 1100.735],
+      "peak_rss_mib": [308.375, 310.421875, 312.0625, 305.140625, 305.65625]
+    },
+    {
+      "input": "mixed",
+      "mode": "unchanged",
+      "build": "optimized",
+      "wall_ms": [968.804, 987.507, 1025.199, 974.658, 969.792],
+      "peak_rss_mib": [282.671875, 284.578125, 283.03125, 287.96875, 283.28125]
+    },
+    {
+      "input": "paths",
+      "mode": "fresh",
+      "build": "baseline",
+      "wall_ms": [413.9, 418.704, 423.037, 413.612, 416.294],
+      "peak_rss_mib": [292.59375, 293.5, 293.328125, 292.96875, 293.03125]
+    },
+    {
+      "input": "paths",
+      "mode": "fresh",
+      "build": "optimized",
+      "wall_ms": [360.773, 366.905, 375.747, 360.232, 365.646],
+      "peak_rss_mib": [285.25, 285.484375, 285.890625, 286.453125, 286.171875]
+    },
+    {
+      "input": "paths",
+      "mode": "preview",
+      "build": "baseline",
+      "wall_ms": [409.307, 420.698, 415.962, 397.868, 406.892],
+      "peak_rss_mib": [292.640625, 292.4375, 291.59375, 292.765625, 291.625]
+    },
+    {
+      "input": "paths",
+      "mode": "preview",
+      "build": "optimized",
+      "wall_ms": [359.115, 368.03, 370.311, 371.391, 355.48],
+      "peak_rss_mib": [285.734375, 285.65625, 285.09375, 285.46875, 284.703125]
+    },
+    {
+      "input": "paths",
+      "mode": "unchanged",
+      "build": "baseline",
+      "wall_ms": [412.332, 411.649, 418.586, 412.215, 410.336],
+      "peak_rss_mib": [292.46875, 293.65625, 293.59375, 292.4375, 292.578125]
+    },
+    {
+      "input": "paths",
+      "mode": "unchanged",
+      "build": "optimized",
+      "wall_ms": [362.361, 362.375, 378.162, 363.068, 360.67],
+      "peak_rss_mib": [286.0, 285.765625, 286.5, 286.40625, 284.28125]
+    },
+    {
+      "input": "serde_core",
+      "mode": "fresh",
+      "build": "baseline",
+      "wall_ms": [426.519, 427.241, 427.862, 419.748, 418.598],
+      "peak_rss_mib": [148.703125, 153.015625, 155.765625, 144.515625, 146.578125]
+    },
+    {
+      "input": "serde_core",
+      "mode": "fresh",
+      "build": "optimized",
+      "wall_ms": [371.855, 376.781, 376.76, 389.841, 394.472],
+      "peak_rss_mib": [144.578125, 142.875, 148.890625, 145.765625, 144.046875]
+    },
+    {
+      "input": "serde_core",
+      "mode": "preview",
+      "build": "baseline",
+      "wall_ms": [399.757, 406.368, 405.702, 407.53, 403.147],
+      "peak_rss_mib": [141.453125, 143.65625, 144.34375, 144.625, 144.828125]
+    },
+    {
+      "input": "serde_core",
+      "mode": "preview",
+      "build": "optimized",
+      "wall_ms": [365.31, 373.307, 365.613, 368.338, 361.526],
+      "peak_rss_mib": [147.71875, 146.34375, 144.84375, 148.40625, 142.640625]
+    },
+    {
+      "input": "serde_core",
+      "mode": "unchanged",
+      "build": "baseline",
+      "wall_ms": [408.446, 417.627, 417.617, 422.205, 414.749],
+      "peak_rss_mib": [144.875, 154.890625, 153.234375, 153.90625, 154.015625]
+    },
+    {
+      "input": "serde_core",
+      "mode": "unchanged",
+      "build": "optimized",
+      "wall_ms": [372.093, 371.063, 370.138, 378.648, 377.66],
+      "peak_rss_mib": [143.78125, 147.484375, 142.265625, 144.578125, 142.75]
+    },
+    {
+      "input": "syn",
+      "mode": "fresh",
+      "build": "baseline",
+      "wall_ms": [634.631, 636.344, 640.956, 641.809, 636.099],
+      "peak_rss_mib": [232.875, 230.828125, 230.15625, 231.703125, 232.640625]
+    },
+    {
+      "input": "syn",
+      "mode": "fresh",
+      "build": "optimized",
+      "wall_ms": [571.762, 579.215, 571.224, 576.487, 572.79],
+      "peak_rss_mib": [220.765625, 220.40625, 220.390625, 220.421875, 203.625]
+    },
+    {
+      "input": "syn",
+      "mode": "preview",
+      "build": "baseline",
+      "wall_ms": [581.674, 587.533, 589.553, 585.124, 585.901],
+      "peak_rss_mib": [226.546875, 227.171875, 226.765625, 227.109375, 225.671875]
+    },
+    {
+      "input": "syn",
+      "mode": "preview",
+      "build": "optimized",
+      "wall_ms": [540.29, 545.825, 555.526, 544.315, 547.678],
+      "peak_rss_mib": [202.046875, 199.84375, 220.09375, 200.984375, 203.265625]
+    },
+    {
+      "input": "syn",
+      "mode": "unchanged",
+      "build": "baseline",
+      "wall_ms": [598.946, 594.843, 598.81, 590.707, 599.168],
+      "peak_rss_mib": [228.046875, 229.875, 230.328125, 230.671875, 231.328125]
+    },
+    {
+      "input": "syn",
+      "mode": "unchanged",
+      "build": "optimized",
+      "wall_ms": [567.843, 561.001, 563.612, 559.007, 560.656],
+      "peak_rss_mib": [219.21875, 221.5, 220.0, 203.671875, 204.3125]
+    },
+    {
+      "input": "wide",
+      "mode": "fresh",
+      "build": "baseline",
+      "wall_ms": [899.453, 870.525, 913.442, 863.329, 877.701],
+      "peak_rss_mib": [129.625, 128.875, 130.453125, 128.90625, 129.640625]
+    },
+    {
+      "input": "wide",
+      "mode": "fresh",
+      "build": "optimized",
+      "wall_ms": [497.124, 493.376, 547.033, 467.475, 483.68],
+      "peak_rss_mib": [128.484375, 128.421875, 128.484375, 129.703125, 128.0625]
+    },
+    {
+      "input": "wide",
+      "mode": "preview",
+      "build": "baseline",
+      "wall_ms": [229.241, 231.715, 235.285, 229.832, 231.041],
+      "peak_rss_mib": [126.4375, 126.09375, 126.171875, 126.53125, 127.15625]
+    },
+    {
+      "input": "wide",
+      "mode": "preview",
+      "build": "optimized",
+      "wall_ms": [226.067, 220.628, 224.842, 225.986, 219.728],
+      "peak_rss_mib": [125.734375, 125.375, 125.0625, 125.546875, 125.125]
+    },
+    {
+      "input": "wide",
+      "mode": "unchanged",
+      "build": "baseline",
+      "wall_ms": [371.95, 375.258, 391.907, 372.404, 376.548],
+      "peak_rss_mib": [130.171875, 129.8125, 129.90625, 130.296875, 129.125]
+    },
+    {
+      "input": "wide",
+      "mode": "unchanged",
+      "build": "optimized",
+      "wall_ms": [372.486, 367.572, 390.498, 361.774, 365.727],
+      "peak_rss_mib": [128.484375, 128.375, 128.796875, 128.5625, 129.109375]
+    }
+  ],
+  "isolated_writer": {
+    "method": "One warm-up and five rounds in alternating build order, in a single Node process. Each transaction adds 4,002 files named api/page-N.mdx containing Page N, using a new temporary output directory. Stage includes open and add. Commit includes closing the transaction.",
+    "series": [
+      {
+        "build": "baseline",
+        "stage_ms": [226.428, 226.6, 275.735, 216.028, 212.581],
+        "commit_and_close_ms": [468.546, 457.098, 468.109, 471.811, 450.718],
+        "total_ms": [694.975, 683.698, 743.844, 687.839, 663.299]
+      },
+      {
+        "build": "optimized",
+        "stage_ms": [228.751, 239.724, 326.648, 241.91, 209.829],
+        "commit_and_close_ms": [50.115, 50.598, 51.594, 52.275, 49.382],
+        "total_ms": [278.866, 290.322, 378.242, 294.184, 259.211]
+      }
+    ]
+  },
+  "documented_input_sha256": "d4347eba9e421543cda6a265f9b018d60c2eb4fd6f355776508790fcf6fa4687"
+}

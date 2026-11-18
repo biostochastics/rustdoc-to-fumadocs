@@ -1,0 +1,141 @@
+--- a/paths/cli.js
++++ b/paths/cli.js
+@@ -334,0 +335 @@
++    if (!preview) throw new Error("This path-list probe requires --json or --dry-run.");
+--- a/paths/generator.js
++++ b/paths/generator.js
+@@ -442 +442 @@
+-        if (!this.membersIndexed) {
++        if (false) {
+@@ -1290 +1290 @@
+-                content: this.generateModuleIndex(node),
++                content: "",
+@@ -1294 +1294 @@
+-            files.push({ path: `${dirPath}/meta.json`, content: this.generateMeta(node) });
++            files.push({ path: `${dirPath}/meta.json`, content: "" });
+@@ -1303 +1303 @@
+-                    content: this.generateKindPage(kind, pages, node),
++                    content: "",
+@@ -1309 +1309 @@
+-                files.push({ path: `${dirPath}/${page.file}.mdx`, content: this.generateItemPage(page) });
++                files.push({ path: `${dirPath}/${page.file}.mdx`, content: "" });
+--- a/cache0/cli.js
++++ b/cache0/cli.js
+@@ -24 +24 @@
+-const WORKSPACE_CACHE_INPUT_BYTES = 4 * 1024 * 1024;
++const WORKSPACE_CACHE_INPUT_BYTES = 0 * 1024 * 1024;
+--- a/cache12/cli.js
++++ b/cache12/cli.js
+@@ -24 +24 @@
+-const WORKSPACE_CACHE_INPUT_BYTES = 4 * 1024 * 1024;
++const WORKSPACE_CACHE_INPUT_BYTES = 12 * 1024 * 1024;
+--- a/strict/cli.js
++++ b/strict/cli.js
+@@ -412 +412 @@
+-            if (!prepared.length)
++            if (skipped.length || !prepared.length)
+--- a/yaml/generator.js
++++ b/yaml/generator.js
+@@ -2680,0 +2681,5 @@
++        if (!this.options.frontmatter && Object.keys(data).join(",") === "title,description,icon" &&
++            Object.values(data).every(value => typeof value === "string" && value.length < 90 &&
++                !/[^A-Za-z0-9 _.,!?'-]/.test(value))) {
++            return '---\ntitle: "' + data.title + '"\ndescription: "' + data.description + '"\nicon: "' + data.icon + '"\n---';
++        }
+--- a/lean/generator.js
++++ b/lean/generator.js
+@@ -440 +440 @@
+-    generate() {
++    generate(sink) {
+@@ -446 +446 @@
+-        const files = [];
++        const files = sink ?? [];
+--- a/lazy/generator.js
++++ b/lazy/generator.js
+@@ -338,0 +339 @@
++const noAnchors = new Map();
+@@ -1020,0 +1022 @@
++        if (!item.docs) return "";
+@@ -1147,0 +1150 @@
++        if (!["struct","enum","union","trait"].includes(page.kind)) return noAnchors;
+@@ -1933 +1936 @@
+-        if (kind === "function") {
++        if (kind === "function" && item.docs) {
+--- a/tree/docs.js
++++ b/tree/docs.js
+@@ -17,0 +18,3 @@
++function cloneNodes(node) {
++    return node.children ? { ...node, children: node.children.map(cloneNodes) } : { ...node };
++}
+@@ -42 +45 @@
+-        return mutable ? structuredClone(entry.root) : entry.root;
++        return mutable ? cloneNodes(entry.root) : entry.root;
+--- a/field/generator.js
++++ b/field/generator.js
+@@ -963 +963,8 @@
+-            if (!ids.some((id) => id != null && this.getItem(id)?.name === name && this.memberUrls.get(String(id)) === url))
++            if (!page.linkableFields) {
++                page.linkableFields = new Set();
++                for (const id of ids) {
++                    if (id != null && this.memberUrls.get(String(id)) === url)
++                        page.linkableFields.add(this.getItem(id)?.name);
++                }
++            }
++            if (!page.linkableFields.has(name))
+--- /dev/null
++++ b/measure-library.mjs
+@@ -0,0 +1,54 @@
++import assert from "node:assert/strict";
++import { createHash } from "node:crypto";
++import { readFileSync } from "node:fs";
++import { performance } from "node:perf_hooks";
++
++const [operation, variant, input] = process.argv.slice(2);
++const { RustdocGenerator } = await import(`./${variant}/generator.js`);
++const { validateRustdocJson } = await import(`./${variant}/validation.js`);
++function load() {
++  return validateRustdocJson(JSON.parse(readFileSync(input, "utf8"))).crate;
++}
++const generator = new RustdocGenerator(load(), {
++  output: ".",
++  baseUrl: "/docs/api",
++  onWarning() {},
++});
++const hash = createHash("sha256");
++if (operation === "fields") {
++  const plan = generator.buildPlan();
++  generator.buildMemberUrls(plan);
++  const page = plan.pages.find((candidate) => candidate.name === "TestStruct");
++  const ids = generator.fieldIds(page.item);
++  const start = performance.now();
++  for (const id of ids) {
++    const url = generator.fragmentUrl(page, "structfield." + generator.getItem(id).name);
++    assert.equal(url, page.url + "#fields");
++    hash.update(url);
++  }
++  console.log({ lookup_ms: performance.now() - start, count: ids.length, sha256: hash.digest("hex") });
++} else {
++  assert.equal(operation, "render");
++  let count = 0;
++  let bytes = 0;
++  function consume({ path, content }) {
++    count++;
++    bytes += Buffer.byteLength(content);
++    hash.update(path).update("\0").update(content).update("\0");
++  }
++  global.gc();
++  const start = performance.now();
++  let files;
++  if (variant === "lean") generator.generate({ push: consume });
++  else {
++    files = generator.generate();
++    files.forEach(consume);
++  }
++  const render_consume_ms = performance.now() - start;
++  global.gc();
++  const live_heap_mib = process.memoryUsage().heapUsed / 1048576;
++  // Keep the same generator state and any returned file array live through collection.
++  assert.ok(generator.crate.index);
++  if (files) assert.equal(files.length, count);
++  console.log({ render_consume_ms, live_heap_mib, count, bytes, sha256: hash.digest("hex") });
++}

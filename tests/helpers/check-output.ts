@@ -8,9 +8,12 @@
  */
 
 import { readdirSync, readFileSync, statSync } from "node:fs";
-import { join, relative, resolve, posix } from "node:path";
+import { join, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { splitFences } from "../../src/docs.js";
+import { createProcessor } from "@mdx-js/mdx";
+import remarkGfm from "remark-gfm";
+import GithubSlugger from "github-slugger";
+import type { Nodes } from "mdast";
 
 export interface CheckResult {
   pages: number;
@@ -22,27 +25,88 @@ export interface CheckResult {
   relative: { file: string; url: string }[];
 }
 
-/** github-slugger's slug for a heading's visible text (close enough here). */
-function slug(text: string): string {
-  return text
-    .toLowerCase()
-    .replace(/[^\p{L}\p{N}\s_-]/gu, "")
-    .replace(/\s/g, "-");
+const parser = createProcessor({ remarkPlugins: [remarkGfm] });
+
+function visibleText(node: Nodes): string {
+  if ("children" in node) return node.children.map(visibleText).join("");
+  return "value" in node ? node.value : "";
 }
 
-/** Heading ids of a page: custom `[#id]` suffixes and slugged heading text. */
-function headingIds(content: string): Set<string> {
+/** Inspect rendered Markdown nodes, including children of Fumadocs JSX. */
+function readPage(f: { path: string; content: string }, result: CheckResult) {
+  const body = f.content.replace(/^---\r?\n[\s\S]*?\r?\n---(?:\r?\n|$)/, "");
   const ids = new Set<string>();
-  const prose = splitFences(content)
-    .filter((_, i) => i % 2 === 0)
-    .join("\n");
-  for (const m of prose.matchAll(/^ {0,3}#{1,6}[ \t]+(.*)$/gm)) {
-    const text = m[1];
-    const custom = /\s*\[#([^\]]+)\]\s*$/.exec(text);
-    if (custom) ids.add(custom[1]);
-    else ids.add(slug(text.replace(/`/g, "")));
+  const urls: string[] = [];
+  const references: string[] = [];
+  const definitions = new Map<string, string>();
+  const slugger = new GithubSlugger();
+  function walk(node: Nodes): void {
+    if (node.type === "heading") {
+      const label = visibleText(node);
+      const custom = node.children.at(-1);
+      const explicit =
+        custom?.type === "text" ? /\s*\[#([^\]]+)\]\s*$/.exec(custom.value)?.[1] : undefined;
+      const id = explicit ?? slugger.slug(label);
+      if (ids.has(id))
+        result.broken.push({ file: f.path, url: `#${id}`, reason: "duplicate heading ID" });
+      ids.add(id);
+    }
+    if (node.type === "link") urls.push(node.url);
+    if (node.type === "definition" && !definitions.has(node.identifier))
+      definitions.set(node.identifier, node.url);
+    if (node.type === "linkReference") references.push(node.identifier);
+    if (node.type === "mdxJsxFlowElement" || node.type === "mdxJsxTextElement") {
+      for (const attr of node.attributes) {
+        if (attr.type !== "mdxJsxAttribute" || !attr.value) continue;
+        if (attr.name === "id" && typeof attr.value === "string") {
+          if (ids.has(attr.value))
+            result.broken.push({
+              file: f.path,
+              url: `#${attr.value}`,
+              reason: "duplicate HTML ID",
+            });
+          ids.add(attr.value);
+        }
+        if (attr.name !== "href") continue;
+        if (typeof attr.value === "string") urls.push(attr.value);
+        else {
+          const expr = attr.value.data?.estree?.body[0];
+          if (
+            expr?.type === "ExpressionStatement" &&
+            expr.expression.type === "Literal" &&
+            typeof expr.expression.value === "string"
+          )
+            urls.push(expr.expression.value);
+        }
+      }
+    }
+    if ("children" in node) {
+      for (const [i, child] of node.children.entries()) {
+        if (
+          child.type === "inlineCode" &&
+          node.children[i - 1]?.type === "text" &&
+          node.children[i + 1]?.type === "text"
+        ) {
+          const start = child.position?.start.offset ?? 0;
+          const end = child.position?.end.offset ?? 0;
+          if (body[start - 1] === "[" && body[start - 2] !== "\\" && body[end] === "]") {
+            result.literalBrackets.push({ file: f.path, text: body.slice(start - 1, end + 1) });
+          }
+        }
+        walk(child);
+      }
+    }
   }
-  return ids;
+  try {
+    walk(parser.parse(body));
+  } catch (err) {
+    result.broken.push({ file: f.path, url: "", reason: `invalid MDX: ${String(err)}` });
+  }
+  for (const ref of references) {
+    const url = definitions.get(ref);
+    if (url !== undefined) urls.push(url);
+  }
+  return { ids, urls };
 }
 
 /** URL path a generated file is served at. */
@@ -57,52 +121,35 @@ export function checkOutput(
   files: { path: string; content: string }[],
   baseUrl = "/docs/api"
 ): CheckResult {
+  const result: CheckResult = { pages: 0, links: 0, broken: [], literalBrackets: [], relative: [] };
   const pages = new Map<string, Set<string>>();
-  for (const f of files) {
-    if (f.path.endsWith(".mdx")) pages.set(urlOf(f.path, baseUrl), headingIds(f.content));
-  }
-  const result: CheckResult = {
-    pages: pages.size,
-    links: 0,
-    broken: [],
-    literalBrackets: [],
-    relative: [],
-  };
+  const links: { file: string; route: string; urls: string[] }[] = [];
   for (const f of files) {
     if (!f.path.endsWith(".mdx")) continue;
-    const pageUrl = urlOf(f.path, baseUrl);
-    const prose = splitFences(f.content.replace(/^---\n[\s\S]*?\n---\n/, ""))
-      .filter((_, i) => i % 2 === 0)
-      .join("\n");
-    const proseNoCode = prose.replace(/(`+)[^`]*?\1/g, (m) =>
-      m.startsWith("``") ? "" : m.includes("[") ? m.replace(/\[|\]/g, "") : m
-    );
-    const defined = new Set(
-      [...prose.matchAll(/^ {0,3}\[([^\]]+)\]:[ \t]*\S+[ \t]*$/gm)].map((m) => m[1])
-    );
-    for (const m of proseNoCode.matchAll(/\[(`[^`\]]+`)\](?![([])/g)) {
-      if (!defined.has(m[1])) result.literalBrackets.push({ file: f.path, text: m[0] });
-    }
-    const urls = [
-      ...[...prose.matchAll(/\]\(([^)\s]+)(?:\s+"[^"]*")?\)/g)].map((m) => m[1]),
-      ...[...f.content.matchAll(/href=\{"([^"]+)"\}/g)].map((m) => m[1]),
-    ];
+    const route = urlOf(f.path, baseUrl);
+    if (pages.has(route))
+      result.broken.push({ file: f.path, url: route, reason: "duplicate page route" });
+    const { ids, urls } = readPage(f, result);
+    pages.set(route, ids);
+    links.push({ file: f.path, route, urls });
+  }
+  result.pages = pages.size;
+  for (const { file, route, urls } of links) {
     for (const url of urls) {
       result.links++;
-      if (/^[a-z][a-z0-9+.-]*:/i.test(url)) continue; // https:, mailto:
-      let target = url;
-      if (url.startsWith("#")) target = pageUrl + url;
-      else if (!url.startsWith("/")) {
-        result.relative.push({ file: f.path, url });
-        target = posix.normalize(posix.join(pageUrl, "..", url));
-      }
-      const [path, anchor] = target.split("#");
-      const decoded = decodeURIComponent(path).replace(/\/+$/, "");
-      const ids = pages.get(decoded);
-      if (!ids) {
-        result.broken.push({ file: f.path, url, reason: "no such page" });
-      } else if (anchor && !ids.has(decodeURIComponent(anchor))) {
-        result.broken.push({ file: f.path, url, reason: `no #${anchor} on page` });
+      if (/^(?:[a-z][a-z\d+.-]*:|\/\/)/i.test(url)) continue;
+      if (!url.startsWith("/") && !url.startsWith("#") && !url.startsWith("?"))
+        result.relative.push({ file, url });
+      try {
+        const target = new URL(url, "https://docs.invalid" + route);
+        const path = decodeURIComponent(target.pathname).replace(/\/+$/, "") || "/";
+        const ids = pages.get(path);
+        const anchor = decodeURIComponent(target.hash.slice(1));
+        if (!ids) result.broken.push({ file, url, reason: "no such page" });
+        else if (anchor && !ids.has(anchor))
+          result.broken.push({ file, url, reason: `no #${anchor} on page` });
+      } catch {
+        result.broken.push({ file, url, reason: "invalid URL" });
       }
     }
   }
@@ -138,5 +185,5 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
   for (const b of r.broken.slice(0, 40)) console.log(`BROKEN ${b.file}: ${b.url} (${b.reason})`);
   for (const b of r.relative.slice(0, 20)) console.log(`RELATIVE ${b.file}: ${b.url}`);
   for (const b of r.literalBrackets.slice(0, 20)) console.log(`BRACKET ${b.file}: ${b.text}`);
-  process.exitCode = r.broken.length > 0 ? 1 : 0;
+  process.exitCode = r.broken.length || r.relative.length || r.literalBrackets.length ? 1 : 0;
 }

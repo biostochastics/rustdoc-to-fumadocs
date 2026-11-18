@@ -6,6 +6,7 @@
   },
   "include": [
     "src/**/*",
+    "scripts/*.mts",
     "tests/**/*",
     "eslint.config.mjs",
     "vitest.config.ts",

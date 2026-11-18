@@ -17,14 +17,15 @@ root="$(cd "$(dirname "$0")/.." && pwd)"
 target="$(mktemp -d)"
 trap 'rm -rf "$target"' EXIT
 gen() {
-  local dir="$1" name="$2" features="$3"
+  local dir="$1" name="$2"
+  shift 2
   (cd "$root/tests/fixtures/crates/$dir" &&
     CARGO_TARGET_DIR="$target" RUSTC_BOOTSTRAP=1 \
     RUSTDOCFLAGS="-Z unstable-options --output-format json --cfg docsrs" \
-    "$cargo_bin" ${CARGO_TOOLCHAIN:+"+$CARGO_TOOLCHAIN"} doc --no-deps --quiet $features)
+    "$cargo_bin" ${CARGO_TOOLCHAIN:+"+$CARGO_TOOLCHAIN"} doc --no-deps --quiet "$@")
   python3 "$root/scripts/prune-fixture.py" "$target/doc/$name.json" \
     "$root/tests/fixtures/$name.$tag.json"
 }
-gen reexport reexport ""
-gen kitchen_sink kitchen_sink "--features extra,fancy"
-gen kitchen_derive kitchen_derive ""
+gen reexport reexport
+gen kitchen_sink kitchen_sink --features extra,fancy
+gen kitchen_derive kitchen_derive

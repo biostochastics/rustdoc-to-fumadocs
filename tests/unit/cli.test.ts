@@ -5,7 +5,17 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtemp, rm, readdir, readFile, writeFile, chmod } from "node:fs/promises";
+import { appendFileSync } from "node:fs";
+import {
+  mkdtemp,
+  mkdir,
+  rm,
+  readdir,
+  readFile,
+  writeFile,
+  chmod,
+  truncate,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve, dirname, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -123,6 +133,17 @@ describe("parseArgs", () => {
     expect(parseArgs(["-g", "flat"]).groupBy).toBe("flat");
   });
 
+  it("accepts whole workspace cache budgets and rejects ambiguous workspace flags", () => {
+    for (const mib of [0, 4, 12])
+      expect(
+        parseArgs(["--workspace-cache-mib", String(mib), "--workspace"]).workspaceCacheMiB
+      ).toBe(mib);
+    for (const value of ["-1", "1.5", "Infinity", "1e3", "99999999999999999"])
+      expect(() => parseArgs(["--workspace", "--workspace-cache-mib", value])).toThrow();
+    expect(() => parseArgs(["--require-complete"])).toThrow(/workspace/);
+    expect(() => parseArgs(["--workspace-cache-mib", "0"])).toThrow(/workspace/);
+  });
+
   it("sets help flag for -h and --help", () => {
     expect(parseArgs(["-h"]).help).toBe(true);
     expect(parseArgs(["--help"]).help).toBe(true);
@@ -233,6 +254,8 @@ describe("run() - end-to-end CLI", () => {
     const code = await run(["--group-by", "wat"], streams);
     expect(code).toBe(1);
     expect(stderr()).toMatch(/Invalid --group-by/);
+    expect(stderr()).toContain("rustdoc-to-fumadocs --help");
+    expect(stderr()).not.toContain("Error: Error:");
   });
 
   it("errors with exit 1 when input file does not exist", async () => {
@@ -240,6 +263,16 @@ describe("run() - end-to-end CLI", () => {
     const code = await run(["--input", join(tmp, "missing.json")], streams);
     expect(code).toBe(1);
     expect(stderr()).toMatch(/Input file not found/);
+  });
+
+  it("reports the files actually written and unchanged on successive publications", async () => {
+    const args = ["--input", fixturePath, "--output", join(tmp, "out")];
+    const first = captureStreams();
+    expect(await run(args, first.streams)).toBe(0);
+    expect(first.stdout()).toContain("5 written, 0 unchanged, 0 removed.");
+    const second = captureStreams();
+    expect(await run(args, second.streams)).toBe(0);
+    expect(second.stdout()).toContain("0 written, 5 unchanged, 0 removed.");
   });
 
   it("errors with exit 1 and valid JSON when --json + missing input", async () => {
@@ -283,6 +316,20 @@ describe("run() - end-to-end CLI", () => {
     const allFiles = await collectAllFiles(outDir);
     expect(allFiles.some((p) => p.endsWith(".mdx"))).toBe(true);
     expect(allFiles.some((p) => p.endsWith("meta.json"))).toBe(true);
+  });
+
+  it("rejects an oversized input before parsing or creating output", async () => {
+    const file = join(tmp, "large.json");
+    await writeFile(file, "");
+    await truncate(file, 100 * 1024 * 1024 + 1);
+    const io = captureStreams();
+    const output = join(tmp, "out");
+    expect(await run(["--input", file, "--output", output, "--json"], io.streams)).toBe(1);
+    expect(JSON.parse(io.stdout()).error).toMatchObject({
+      code: "INPUT_READ_FAILED",
+      message: expect.stringContaining("100 MiB"),
+    });
+    await expect(readdir(output)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("emits --json output with crate metadata on success", async () => {
@@ -329,6 +376,24 @@ describe("run() - --crate auto-detection", () => {
   afterEach(async () => {
     process.chdir(origCwd);
     await rm(tmp, { recursive: true, force: true });
+  });
+
+  it("discovers a renamed library under Cargo's configured target directory", async () => {
+    await mkdir("src");
+    await mkdir(".cargo");
+    await mkdir("build/doc", { recursive: true });
+    await writeFile("src/lib.rs", "");
+    await writeFile(
+      "Cargo.toml",
+      '[package]\nname="demo-lib"\nversion="0.1.0"\n[lib]\nname="renamed"\n'
+    );
+    await writeFile(".cargo/config.toml", '[build]\ntarget-dir="build"\n');
+    await writeFile("build/doc/renamed.json", await readFile(fixturePath));
+    for (const argv of [[], ["--crate", "renamed"], ["--crate", "demo-lib"]]) {
+      const io = captureStreams();
+      expect(await run([...argv, "--json"], io.streams), io.stderr()).toBe(0);
+      expect(JSON.parse(io.stdout()).crate.name).toBe("test_crate");
+    }
   });
 
   it("returns 1 with hint when --crate json is missing", async () => {
@@ -418,6 +483,54 @@ describe("run() - --workspace mode", () => {
     );
   }
 
+  it("lists workspace files in publication order without opening the output directory", async () => {
+    await makeWorkspace(join(tmp, "target"));
+    const dest = join(tmp, "new");
+    const args = [
+      "--workspace",
+      tmp,
+      "--require-complete",
+      "--workspace-cache-mib",
+      "0",
+      "--output",
+      dest,
+    ];
+    const full = captureStreams();
+    expect(await run([...args, "--json"], full.streams)).toBe(0);
+    const paths = (JSON.parse(full.stdout()).files as { path: string }[]).map((f) => f.path);
+    const listing = captureStreams();
+    expect(await run([...args, "--list-files", "--json"], listing.streams)).toBe(0);
+    expect(JSON.parse(listing.stdout())).toEqual({
+      success: true,
+      status: "complete",
+      workspace: { generated: ["testy"], skipped: [] },
+      paths,
+    });
+    const plain = captureStreams();
+    expect(await run([...args, "--list-files"], plain.streams)).toBe(0);
+    expect(plain.stdout()).toBe(paths.join("\n") + "\n");
+    await expect(readdir(dest)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("reports an invalid glob-matched member before strict publication", async () => {
+    await makeWorkspace(join(tmp, "target"));
+    await writeFile(join(tmp, "Cargo.toml"), '[workspace]\nmembers=["crates/*"]\n');
+    await mkdir(join(tmp, "crates/invalid"));
+    await writeFile(join(tmp, "crates/invalid/Cargo.toml"), "[package");
+    const out = join(tmp, "out");
+    const args = ["--workspace", tmp, "--output", out, "--list-files", "--json"];
+    const partial = captureStreams();
+    expect(await run(args, partial.streams)).toBe(0);
+    expect(JSON.parse(partial.stdout()).status).toBe("partial");
+    expect(
+      await run(
+        ["--workspace", tmp, "--output", out, "--require-complete"],
+        captureStreams().streams
+      )
+    ).toBe(1);
+    await expect(readdir(out)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
   it("reads rustdoc JSON from --target-dir", async () => {
     const target = join(tmp, "elsewhere");
     await makeWorkspace(target);
@@ -456,6 +569,27 @@ describe("run() - --workspace mode", () => {
     expect(code).toBe(0);
     expect(stderr()).toMatch(/testy: Rustdoc format version 999 is newer/);
   });
+
+  it.each([0, 5 * 1024 * 1024])(
+    "rechecks member bytes before rendering (%i padding bytes)",
+    async (padding) => {
+      const json = JSON.parse(await readFile(fixturePath, "utf8")) as { format_version: number };
+      json.format_version = 999;
+      const target = join(tmp, "target");
+      await makeWorkspace(target, JSON.stringify(json) + " ".repeat(padding));
+      const { streams, stderr } = captureStreams();
+      const code = await run(["--workspace", tmp, "--output", join(tmp, "out")], {
+        stdout: streams.stdout,
+        stderr(message) {
+          streams.stderr(message);
+          if (message.includes("is newer")) appendFileSync(join(target, "doc", "testy.json"), "\n");
+        },
+      });
+      expect(code).toBe(1);
+      expect(stderr()).toContain("Rustdoc input changed during generation");
+      await expect(readdir(join(tmp, "out"))).rejects.toMatchObject({ code: "ENOENT" });
+    }
+  );
 
   /** Workspace with members `pub` (published) and `tool` (publish = false). */
   async function makeTwoMemberWorkspace(): Promise<void> {
@@ -500,6 +634,32 @@ describe("run() - --workspace mode", () => {
     ).toBe(0);
     meta = JSON.parse(await readFile(join(out2, "meta.json"), "utf-8")) as { pages: string[] };
     expect(meta.pages).toEqual(["index", "pub_crate", "tool_crate"]);
+  });
+
+  it("rejects partial strict publication and preserves the previous complete tree", async () => {
+    await makeTwoMemberWorkspace();
+    const out = join(tmp, "existing");
+    const args = [
+      "--workspace",
+      tmp,
+      "--include-unpublished",
+      "--require-complete",
+      "--output",
+      out,
+    ];
+    expect(await run(args, captureStreams().streams)).toBe(0);
+    const manifestPath = join(out, ".rustdoc-to-fumadocs.manifest");
+    const manifest = await readFile(manifestPath);
+    await rm(join(tmp, "target/doc/tool.json"));
+    const failure = captureStreams();
+    expect(await run(args, failure.streams)).toBe(1);
+    expect(failure.stderr()).toMatch(/Incomplete workspace/);
+    expect(await readFile(manifestPath)).toEqual(manifest);
+    expect(await readFile(join(out, "tool_crate/index.mdx"), "utf8")).toContain("tool_crate");
+    const json = captureStreams();
+    expect(await run([...args, "--list-files", "--json"], json.streams)).toBe(1);
+    expect(JSON.parse(json.stdout()).error.context.skipped[0].name).toBe("tool");
+    expect(await run([...args, "--exclude", "tool"], captureStreams().streams)).toBe(0);
   });
 
   it("excludes members named with --exclude", async () => {
@@ -562,6 +722,75 @@ describe("isDirectInvocation", () => {
       expect(isDirectInvocation(target, moduleUrl)).toBe(true);
       expect(isDirectInvocation(join(dir, "other.js"), moduleUrl)).toBe(false);
       expect(isDirectInvocation(undefined, moduleUrl)).toBe(false);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("CLI pipeline and diagnostics", () => {
+  it("flushes a large report to a real pipe", async () => {
+    const { execFile } = await import("node:child_process");
+    const { promisify } = await import("node:util");
+    const dir = await mkdtemp(join(tmpdir(), "rustdoc-pipe-"));
+    try {
+      const data = JSON.parse(await readFile(fixturePath, "utf8"));
+      const items = data.index[data.root].inner.module.items;
+      const prefix = "documented_function_with_a_long_public_name_".repeat(3);
+      for (let i = 0; i < 900; i++) {
+        const id = "function" + i;
+        data.index[id] = { ...data.index["0:2:0"], id, name: prefix + i, docs: null };
+        items.push(id);
+      }
+      const input = join(dir, "crate.json");
+      await writeFile(input, JSON.stringify(data));
+      const { stdout } = await promisify(execFile)(process.execPath, [
+        "--import",
+        "tsx",
+        resolve(__dirname, "../../src/cli.ts"),
+        "--json",
+        "--input",
+        input,
+      ]);
+      const report = JSON.parse(stdout);
+      expect(Buffer.byteLength(stdout)).toBeGreaterThan(128 * 1024);
+      expect(report.files).toHaveLength(report.stats.totalFiles);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+  it("emits machine-readable errors for unknown flags and no input", async () => {
+    for (const args of [["--dryrun", "--json"], ["--json"]]) {
+      const io = captureStreams();
+      expect(await run(args, io.streams)).toBe(1);
+      expect(JSON.parse(io.stdout()).success).toBe(false);
+    }
+  });
+  it("reports the package version", async () => {
+    const io = captureStreams();
+    expect(await run(["--version"], io.streams)).toBe(0);
+    const { version } = JSON.parse(
+      await readFile(resolve(__dirname, "../../package.json"), "utf8")
+    );
+    expect(io.stdout().trim()).toBe(version);
+  });
+  it("reports byte lengths and leaves JSON previews off disk", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "utf8-report-"));
+    try {
+      const io = captureStreams(),
+        target = join(dir, "out");
+      const args = [
+        "--input",
+        resolve(__dirname, "../fixtures/kitchen_sink.v60.json"),
+        "--output",
+        target,
+      ];
+      await run([...args, "--json"], io.streams);
+      const report = JSON.parse(io.stdout());
+      expect(await readdir(dir)).toEqual([]);
+      await run(args, captureStreams().streams);
+      for (const f of report.files)
+        expect((await readFile(join(target, f.path))).length).toBe(f.size);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

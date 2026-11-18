@@ -17,7 +17,7 @@ import type {
   WherePredicate,
 } from "../types.js";
 import { isUnitStruct, isTupleStruct, isPlainStruct } from "../types.js";
-import { formatType, formatGenericBound } from "./types.js";
+import { formatType, formatGenericBound, formatAbi, formatConstArg } from "./types.js";
 
 /**
  * Format a function signature.
@@ -39,18 +39,8 @@ export function formatFunctionSignature(name: string, fn: RustFunction): string 
   if (fn.header.is_async) parts.push("async");
   if (fn.header.is_unsafe) parts.push("unsafe");
 
-  // Check for extern ABI
-  if (fn.header.abi !== "Rust") {
-    if (typeof fn.header.abi === "object") {
-      if ("C" in fn.header.abi) {
-        parts.push('extern "C"');
-      } else if ("System" in fn.header.abi) {
-        parts.push('extern "system"');
-      } else if ("Other" in fn.header.abi) {
-        parts.push(`extern "${fn.header.abi.Other}"`);
-      }
-    }
-  }
+  const abi = formatAbi(fn.header.abi);
+  if (abi) parts.push(abi);
 
   parts.push("fn");
 
@@ -73,6 +63,8 @@ export function formatFunctionSignature(name: string, fn: RustFunction): string 
     return `${paramName}: ${formatType(type)}`;
   });
 
+  if (fn.sig.is_c_variadic) params.push("...");
+
   // Join name + generics + param list with no space between `name<...>` and `(`.
   parts.push(`${name}${formatGenerics(fn.generics)}(${params.join(", ")})`);
 
@@ -82,14 +74,7 @@ export function formatFunctionSignature(name: string, fn: RustFunction): string 
     parts.push(formatType(fn.sig.output));
   }
 
-  // Where clause
-  if (fn.generics.where_predicates.length > 0) {
-    const whereClauses = fn.generics.where_predicates.map((p) => formatWherePredicate(p));
-    parts.push("where");
-    parts.push(whereClauses.join(", "));
-  }
-
-  return parts.join(" ");
+  return parts.join(" ") + formatWhereClause(fn.generics);
 }
 
 /**
@@ -105,15 +90,19 @@ export function formatFunctionSignature(name: string, fn: RustFunction): string 
  * // "struct MyStruct<T> { ... }"
  * ```
  */
-export function formatStructSignature(name: string, struct: Struct): string {
+export function formatStructSignature(
+  name: string,
+  struct: Struct,
+  tupleFields?: readonly string[]
+): string {
   let sig = `struct ${name}${formatGenerics(struct.generics)}`;
 
   if (isUnitStruct(struct.kind)) {
-    sig += ";";
+    sig += formatWhereClause(struct.generics) + ";";
   } else if (isTupleStruct(struct.kind)) {
-    sig += "(...)";
+    sig += `(${tupleFields?.join(", ") ?? "..."})${formatWhereClause(struct.generics)}${tupleFields ? ";" : ""}`;
   } else if (isPlainStruct(struct.kind)) {
-    sig += " { ... }";
+    sig += formatWhereClause(struct.generics) + " { ... }";
   }
 
   return sig;
@@ -133,7 +122,7 @@ export function formatStructSignature(name: string, struct: Struct): string {
  * ```
  */
 export function formatUnionSignature(name: string, union: Union): string {
-  return `union ${name}${formatGenerics(union.generics)} { ... }`;
+  return `union ${name}${formatGenerics(union.generics)}${formatWhereClause(union.generics)} { ... }`;
 }
 
 /**
@@ -150,7 +139,7 @@ export function formatUnionSignature(name: string, union: Union): string {
  * ```
  */
 export function formatEnumSignature(name: string, enumDef: Enum): string {
-  return `enum ${name}${formatGenerics(enumDef.generics)} { ... }`;
+  return `enum ${name}${formatGenerics(enumDef.generics)}${formatWhereClause(enumDef.generics)} { ... }`;
 }
 
 /**
@@ -169,15 +158,13 @@ export function formatEnumSignature(name: string, enumDef: Enum): string {
 export function formatTraitSignature(name: string, trait: Trait): string {
   let sig = "";
   if (trait.is_unsafe) sig += "unsafe ";
+  if (trait.is_auto) sig += "auto ";
   sig += `trait ${name}${formatGenerics(trait.generics)}`;
   const bounds = trait.bounds.map((b) => formatGenericBound(b)).filter(Boolean);
   if (bounds.length > 0) {
     sig += `: ${bounds.join(" + ")}`;
   }
-  if (trait.generics.where_predicates.length > 0) {
-    const where = trait.generics.where_predicates.map(formatWherePredicate).filter(Boolean);
-    if (where.length > 0) sig += ` where ${where.join(", ")}`;
-  }
+  sig += formatWhereClause(trait.generics);
   sig += " { ... }";
   return sig;
 }
@@ -237,6 +224,7 @@ export function formatGenericParam(param: GenericParamDef): string {
   }
   // Type parameter: may carry inline bounds (`T: Clone + Debug`) and/or a
   // default (`T = String`). Both are load-bearing for API documentation.
+  if (!("type" in param.kind)) return param.name;
   const tk = param.kind.type;
   let s = param.name;
   if (tk.bounds.length > 0) {
@@ -298,8 +286,14 @@ export function formatWherePredicate(pred: WherePredicate): string {
     }
     if ("constant" in ep.rhs) {
       const constVal = ep.rhs.constant;
-      return `${formatType(ep.lhs)} = ${constVal.const?.expr ?? "..."}`;
+      return `${formatType(ep.lhs)} = ${formatConstArg(constVal)}`;
     }
   }
   return "";
+}
+
+/** Format a declaration's where clause, with its leading space. */
+export function formatWhereClause(generics: Generics): string {
+  const clauses = generics.where_predicates.map(formatWherePredicate).filter(Boolean);
+  return clauses.length ? ` where ${clauses.join(", ")}` : "";
 }

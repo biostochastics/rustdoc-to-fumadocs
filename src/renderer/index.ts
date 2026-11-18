@@ -28,6 +28,7 @@ export {
   formatEnumSignature,
   formatTraitSignature,
   formatGenerics,
+  formatWhereClause,
   formatGenericParam,
 } from "./signatures.js";
 

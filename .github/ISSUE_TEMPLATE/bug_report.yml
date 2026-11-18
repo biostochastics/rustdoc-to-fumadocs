@@ -39,7 +39,7 @@ body:
     attributes:
       label: Version
       description: What version are you using?
-      placeholder: "0.2.0"
+      placeholder: "0.5.0"
     validations:
       required: true
 
@@ -47,7 +47,7 @@ body:
     id: node
     attributes:
       label: Node.js Version
-      placeholder: "20.11.0"
+      placeholder: "24.x"
     validations:
       required: true
 
@@ -61,3 +61,15 @@ body:
         - Windows
     validations:
       required: true
+
+  - type: input
+    id: producer
+    attributes:
+      label: Rust and rustdoc format
+      description: Include rustdoc --version and the input JSON format_version.
+
+  - type: input
+    id: consumer
+    attributes:
+      label: Fumadocs versions
+      description: For site issues list the fumadocs-core, fumadocs-ui, and MDX adapter versions.
