@@ -67,6 +67,8 @@ const KIND_ORDER: readonly ItemKind[] = [
   "constant",
   "static",
   "macro",
+  "proc_derive",
+  "proc_attribute",
 ] as const;
 
 /** Item kinds that get their own page (or kind-page section). */
@@ -166,6 +168,8 @@ function kindSuffix(kind: ItemKind): string {
   const map: Partial<Record<ItemKind, string>> = {
     function: "fn",
     macro: "macro",
+    proc_derive: "derive",
+    proc_attribute: "attr",
     module: "mod",
     type_alias: "type",
     constant: "const",
@@ -1807,6 +1811,8 @@ export class RustdocGenerator {
         sections.push(this.renderConstant(item, name));
         break;
       case "macro":
+      case "proc_derive":
+      case "proc_attribute":
         sections.push(this.renderMacro(item, name));
         break;
       default:
@@ -2325,13 +2331,35 @@ export class RustdocGenerator {
    */
   private renderMacro(item: Item, name: string): string {
     const sections: string[] = [];
-    sections.push(`## \`${name}!\``);
-    sections.push("");
 
-    if ("macro" in item.inner) {
+    if ("proc_macro" in item.inner) {
+      // Procedural macros: show how they are invoked.
+      const pm = item.inner.proc_macro;
+      const usage =
+        pm.kind === "derive"
+          ? `#[derive(${name})]`
+          : pm.kind === "attr"
+            ? `#[${name}]`
+            : `${name}!()`;
+      sections.push(`## ${inlineCode(pm.kind === "bang" ? `${name}!` : name)}`);
+      sections.push("");
       sections.push("```rust");
-      sections.push(item.inner.macro);
+      sections.push(usage);
       sections.push("```");
+      if (pm.helpers.length > 0) {
+        sections.push("");
+        sections.push(
+          `Helper attributes: ${pm.helpers.map((h) => inlineCode(`#[${h}]`)).join(", ")}`
+        );
+      }
+    } else {
+      sections.push(`## \`${name}!\``);
+      sections.push("");
+      if ("macro" in item.inner) {
+        sections.push("```rust");
+        sections.push(item.inner.macro);
+        sections.push("```");
+      }
     }
 
     this.pushDocs(sections, item, 2);
@@ -2615,6 +2643,8 @@ function kindToFilename(kind: ItemKind): string {
     constant: "constants",
     static: "statics",
     macro: "macros",
+    proc_derive: "derives",
+    proc_attribute: "attributes",
   };
   return map[kind] ?? kind;
 }
@@ -2640,6 +2670,8 @@ function kindToTitle(kind: ItemKind): string {
     constant: "Constants",
     static: "Statics",
     macro: "Macros",
+    proc_derive: "Derive Macros",
+    proc_attribute: "Attribute Macros",
   };
   return map[kind] ?? kind;
 }
@@ -2662,6 +2694,8 @@ function kindToIcon(kind: ItemKind): string {
     constant: "Hash",
     static: "Database",
     macro: "Wand2",
+    proc_derive: "Wand2",
+    proc_attribute: "Wand2",
     module: "Folder",
   };
   return map[kind] ?? "FileText";

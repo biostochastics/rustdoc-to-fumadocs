@@ -394,7 +394,7 @@ describe("run() - --workspace mode", () => {
     };
     expect(topMeta.pages[0]).toBe("index");
     // Meta should reference the crate's root name, not the Cargo package name.
-    expect(topMeta.pages).toContain("...test_crate");
+    expect(topMeta.pages).toContain("test_crate");
     const indexContent = await readFile(join(outDir, "index.mdx"), "utf-8");
     expect(indexContent).toContain("[`test_crate`](/docs/api/test_crate)");
     expect(indexContent).toContain("1 crate");
@@ -455,6 +455,67 @@ describe("run() - --workspace mode", () => {
     const code = await run(["--workspace", tmp, "--output", join(tmp, "out")], streams);
     expect(code).toBe(0);
     expect(stderr()).toMatch(/testy: Rustdoc format version 999 is newer/);
+  });
+
+  /** Workspace with members `pub` (published) and `tool` (publish = false). */
+  async function makeTwoMemberWorkspace(): Promise<void> {
+    const { mkdir: mk } = await import("node:fs/promises");
+    const json = await readFile(fixturePath, "utf-8");
+    await writeFile(
+      join(tmp, "Cargo.toml"),
+      `[workspace]\nmembers = ["crates/pub", "crates/tool"]\n`,
+      "utf-8"
+    );
+    for (const [name, extra] of [
+      ["pub", ""],
+      ["tool", "publish = false\n"],
+    ]) {
+      await mk(join(tmp, "crates", name), { recursive: true });
+      await writeFile(
+        join(tmp, "crates", name, "Cargo.toml"),
+        `[package]\nname = "${name}"\nversion = "0.1.0"\n${extra}`,
+        "utf-8"
+      );
+      await mk(join(tmp, "target", "doc"), { recursive: true });
+      // Distinct crate roots so the outputs do not overlap.
+      await writeFile(
+        join(tmp, "target", "doc", `${name}.json`),
+        json.replace(/"test_crate"/g, `"${name}_crate"`),
+        "utf-8"
+      );
+    }
+  }
+
+  it("skips publish = false members unless --include-unpublished is given", async () => {
+    await makeTwoMemberWorkspace();
+    const { streams } = captureStreams();
+    const out = join(tmp, "out");
+    expect(await run(["--workspace", tmp, "--output", out], streams)).toBe(0);
+    let meta = JSON.parse(await readFile(join(out, "meta.json"), "utf-8")) as { pages: string[] };
+    expect(meta.pages).toEqual(["index", "pub_crate"]);
+
+    const out2 = join(tmp, "out2");
+    expect(
+      await run(["--workspace", tmp, "--output", out2, "--include-unpublished"], streams)
+    ).toBe(0);
+    meta = JSON.parse(await readFile(join(out2, "meta.json"), "utf-8")) as { pages: string[] };
+    expect(meta.pages).toEqual(["index", "pub_crate", "tool_crate"]);
+  });
+
+  it("excludes members named with --exclude", async () => {
+    await makeTwoMemberWorkspace();
+    const { streams } = captureStreams();
+    const out = join(tmp, "out");
+    expect(
+      await run(
+        ["--workspace", tmp, "--output", out, "--include-unpublished", "--exclude", "pub"],
+        streams
+      )
+    ).toBe(0);
+    const meta = JSON.parse(await readFile(join(out, "meta.json"), "utf-8")) as {
+      pages: string[];
+    };
+    expect(meta.pages).toEqual(["index", "tool_crate"]);
   });
 
   it("returns a non-zero exit when no member has a rustdoc JSON", async () => {

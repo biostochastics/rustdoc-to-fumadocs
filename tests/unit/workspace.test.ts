@@ -35,6 +35,30 @@ async function writeMember(dir: string, name: string): Promise<void> {
 }
 
 describe("loadWorkspace", () => {
+  it("records publish = false (directly or inherited from the workspace)", async () => {
+    await writeMember(join(tmp, "crates", "lib"), "lib");
+    await mkdir(join(tmp, "crates", "tool"), { recursive: true });
+    await writeFile(
+      join(tmp, "crates", "tool", "Cargo.toml"),
+      `[package]\nname = "tool"\nversion = "0.1.0"\npublish = false\n`,
+      "utf-8"
+    );
+    await mkdir(join(tmp, "crates", "inherit"), { recursive: true });
+    await writeFile(
+      join(tmp, "crates", "inherit", "Cargo.toml"),
+      `[package]\nname = "inherit"\nversion = "0.1.0"\npublish.workspace = true\n`,
+      "utf-8"
+    );
+    await writeFile(
+      join(tmp, "Cargo.toml"),
+      `[workspace]\nmembers = ["crates/*"]\n[workspace.package]\npublish = []\n`,
+      "utf-8"
+    );
+    const ws = await loadWorkspace(join(tmp, "Cargo.toml"));
+    const publish = Object.fromEntries(ws.members.map((m) => [m.name, m.publish]));
+    expect(publish).toEqual({ lib: true, tool: false, inherit: false });
+  });
+
   it("parses a workspace with explicit members", async () => {
     await writeMember(join(tmp, "crates", "alpha"), "alpha");
     await writeMember(join(tmp, "crates", "beta"), "beta");
@@ -135,7 +159,9 @@ describe("renderWorkspaceMeta", () => {
       { name: "beta", path: "/x/beta" },
     ];
     const meta = JSON.parse(renderWorkspaceMeta(members));
-    expect(meta.pages).toEqual(["index", "...alpha", "...beta"]);
+    // Folder links: each crate stays a collapsible folder with its own
+    // meta.json instead of being spread into the top level.
+    expect(meta.pages).toEqual(["index", "alpha", "beta"]);
   });
 });
 

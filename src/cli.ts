@@ -95,6 +95,10 @@ export interface CliArgs {
   sourceUrlBase?: string;
   /** Git ref for source links (see GeneratorOptions.sourceRef). */
   sourceRef?: string;
+  /** Workspace members to leave out (package or crate names). */
+  exclude: string[];
+  /** Also document workspace members with `publish = false`. */
+  includeUnpublished: boolean;
   output: string;
   baseUrl: string;
   groupBy: "module" | "kind" | "flat";
@@ -166,6 +170,8 @@ export function parseArgs(argv: string[]): CliArgs {
     json: false,
     verbose: false,
     help: false,
+    exclude: [],
+    includeUnpublished: false,
   };
 
   const requireValue = (flag: string, next: string | undefined, label: string): string => {
@@ -238,6 +244,17 @@ export function parseArgs(argv: string[]): CliArgs {
       case "--source-ref":
         result.sourceRef = requireValue(arg, argv[++i], "a git ref argument");
         break;
+      case "--exclude":
+        result.exclude.push(
+          ...requireValue(arg, argv[++i], "a crate name argument")
+            .split(",")
+            .map((n) => n.trim())
+            .filter(Boolean)
+        );
+        break;
+      case "--include-unpublished":
+        result.includeUnpublished = true;
+        break;
       case "-w":
       case "--workspace": {
         // Accept an optional directory argument. If the next token is another
@@ -278,6 +295,10 @@ OPTIONS:
   --target-dir <dir>      Cargo target directory containing doc/<crate>.json
                           (default: $CARGO_TARGET_DIR, else ./target or
                           <workspace>/target)
+  --exclude <crates>      Workspace members to skip (comma-separated or
+                          repeated; package or crate names)
+  --include-unpublished   Also document workspace members with
+                          publish = false (skipped by default)
   -o, --output <dir>      Output directory (default: content/docs/api)
   -b, --base-url <url>    Base URL for generated docs (default: /docs/api)
   --source-url-base <url> Repository URL for "Source" links and for
@@ -488,8 +509,22 @@ async function runWorkspace(
     );
   }
 
+  const norm = (n: string): string => n.replace(/-/g, "_");
+  const excluded = new Set(args.exclude.map(norm));
+  const members = ws.members.filter((m) => {
+    if (excluded.has(norm(m.name))) {
+      log(`  ${m.name}: excluded (--exclude)`);
+      return false;
+    }
+    if (m.publish === false && !args.includeUnpublished) {
+      log(`  ${m.name}: skipped (publish = false; pass --include-unpublished to document it)`);
+      return false;
+    }
+    return true;
+  });
+
   log(
-    `Workspace: ${ws.rootDir} (${ws.members.length} member${ws.members.length === 1 ? "" : "s"})`
+    `Workspace: ${ws.rootDir} (${members.length} member${members.length === 1 ? "" : "s"} to document)`
   );
 
   const targetDir = resolveTargetDir(args.targetDir, ws.rootDir);
@@ -500,7 +535,7 @@ async function runWorkspace(
     [];
   const skipped: { name: string; reason: string }[] = [];
 
-  for (const member of ws.members) {
+  for (const member of members) {
     const jsonPath = await findMemberRustdocJson(member.name, targetDir);
     if (!jsonPath) {
       skipped.push({
@@ -598,7 +633,7 @@ async function runWorkspace(
     return emitError(
       new RustdocError(
         ErrorCode.INPUT_READ_FAILED,
-        `No workspace members produced output. All ${ws.members.length} members were skipped.`,
+        `No workspace members produced output. All ${members.length} members were skipped.`,
         {
           hint: 'Run `cargo doc` with the JSON rustdoc flags before invoking --workspace. Example:\n  RUSTC_BOOTSTRAP=1 RUSTDOCFLAGS="-Z unstable-options --output-format json" cargo doc --workspace --no-deps',
           context: { skipped },
