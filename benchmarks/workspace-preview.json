@@ -1,0 +1,104 @@
+{
+  "baseline": "b02dc87",
+  "platform": "Apple M4 Pro, macOS 26.6.2, APFS, Node 22.17.1",
+  "method": "One warm-up, five measured rounds, shuffled input and variant order, one Node process per CLI invocation. The two-command workflow sums preview and write times and reports writer peak RSS.",
+  "modes": {
+    "old": "baseline --json",
+    "new": "implemented --json",
+    "list": "implemented --list-files --json",
+    "two": "baseline --json then fresh publication",
+    "strict": "implemented --require-complete fresh publication"
+  },
+  "inputs": {
+    "wide": "32,000-function fixture described in PERFORMANCE_AUDIT.md",
+    "mixed": "six real crates in one workspace",
+    "minimal": "tests/fixtures/minimal.json",
+    "syn": "syn 2.0.118"
+  },
+  "series": [
+    {
+      "input": "minimal",
+      "mode": "list",
+      "wall_ms": [58.629, 60.143, 58.379, 58.482, 58.778],
+      "peak_rss_mib": [62.641, 62.656, 62.672, 62.859, 62.703]
+    },
+    {
+      "input": "minimal",
+      "mode": "new",
+      "wall_ms": [66.373, 64.747, 65.613, 65.01, 64.928],
+      "peak_rss_mib": [65.594, 65.25, 65.391, 65.438, 65.609]
+    },
+    {
+      "input": "minimal",
+      "mode": "old",
+      "wall_ms": [115.609, 112.164, 115.651, 113.798, 113.295],
+      "peak_rss_mib": [74.922, 75.0, 74.797, 74.531, 74.875]
+    },
+    {
+      "input": "mixed",
+      "mode": "list",
+      "wall_ms": [247.553, 244.562, 242.389, 241.196, 237.78],
+      "peak_rss_mib": [154.703, 154.719, 150.016, 154.359, 154.109]
+    },
+    {
+      "input": "mixed",
+      "mode": "new",
+      "wall_ms": [895.596, 898.689, 894.867, 892.298, 885.666],
+      "peak_rss_mib": [289.625, 292.406, 291.781, 292.469, 291.594]
+    },
+    {
+      "input": "mixed",
+      "mode": "old",
+      "wall_ms": [955.704, 975.059, 962.033, 952.185, 954.839],
+      "peak_rss_mib": [282.031, 279.312, 281.25, 285.141, 283.031]
+    },
+    {
+      "input": "mixed",
+      "mode": "strict",
+      "wall_ms": [976.361, 972.619, 999.604, 968.294, 968.992],
+      "peak_rss_mib": [289.906, 291.547, 290.422, 290.359, 290.656]
+    },
+    {
+      "input": "mixed",
+      "mode": "two",
+      "wall_ms": [1984.275, 2114.394, 2089.894, 1986.29, 1971.172],
+      "peak_rss_mib": [286.234, 284.328, 283.797, 282.703, 285.297]
+    },
+    {
+      "input": "syn",
+      "mode": "list",
+      "wall_ms": [154.092, 153.833, 144.16, 152.408, 144.533],
+      "peak_rss_mib": [135.281, 134.719, 134.844, 134.688, 134.969]
+    },
+    {
+      "input": "syn",
+      "mode": "new",
+      "wall_ms": [487.946, 483.009, 471.823, 468.239, 477.872],
+      "peak_rss_mib": [213.438, 213.172, 213.797, 213.016, 213.609]
+    },
+    {
+      "input": "syn",
+      "mode": "old",
+      "wall_ms": [560.146, 545.953, 554.948, 542.869, 541.055],
+      "peak_rss_mib": [217.484, 198.922, 216.906, 200.844, 216.75]
+    },
+    {
+      "input": "wide",
+      "mode": "list",
+      "wall_ms": [301.998, 310.654, 309.239, 302.973, 304.383],
+      "peak_rss_mib": [235.531, 235.562, 235.281, 235.781, 235.844]
+    },
+    {
+      "input": "wide",
+      "mode": "new",
+      "wall_ms": [400.38, 405.868, 395.368, 395.059, 403.516],
+      "peak_rss_mib": [255.328, 254.344, 255.625, 253.984, 253.797]
+    },
+    {
+      "input": "wide",
+      "mode": "old",
+      "wall_ms": [650.543, 649.009, 663.333, 662.19, 638.017],
+      "peak_rss_mib": [289.328, 288.859, 290.828, 290.359, 290.5]
+    }
+  ]
+}

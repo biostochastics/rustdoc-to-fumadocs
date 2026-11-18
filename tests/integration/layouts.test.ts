@@ -14,6 +14,30 @@ function itemNamed(crate: RustdocCrate, name: string): Item {
   return found;
 }
 
+it("renders on demand and allows early returns and interleaved consumers", () => {
+  const titles: string[] = [];
+  const generator = new RustdocGenerator(loadCrate("minimal.json"), {
+    ...options,
+    frontmatter: (_item, path) => {
+      const title = path.join("::");
+      titles.push(title);
+      return { title, description: "custom", icon: "Box", extra: true };
+    },
+  });
+  const paths = [...generator.filePaths()];
+  const first = generator.generateFiles();
+  const second = generator.generateFiles();
+  expect(titles).toEqual([]);
+  const start = first.next().value;
+  expect(second.next().value).toEqual(start);
+  expect(titles).toHaveLength(2);
+  first.return?.();
+  const files = [start, ...second];
+  expect(files.map((f) => f.path)).toEqual(paths);
+  expect(start.content).toContain("extra: true");
+  expect(generator.generate()).toEqual(files);
+});
+
 describe.each(FORMATS)("layout and visibility regressions (%s)", (format) => {
   const input = () => loadCrate(`layout_cases.${format}.json`);
   const generate = (overrides?: Partial<GeneratorOptions>) =>
@@ -26,6 +50,7 @@ describe.each(FORMATS)("layout and visibility regressions (%s)", (format) => {
         const generator = new RustdocGenerator(input(), { ...options, groupBy, generateIndex });
         const files = generator.generate();
         const paths = files.map((file) => file.path);
+        expect([...generator.filePaths()]).toEqual(paths);
         const urls = paths
           .filter((p) => p.endsWith(".mdx"))
           .map((p) => p.replace(/(?:\/index)?\.mdx$/, ""));

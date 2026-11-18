@@ -27,6 +27,16 @@ const parseOptions = { extensions: [gfm()], mdastExtensions: [gfmFromMarkdown()]
 export type MarkdownParser = (source: string, mutable?: boolean) => Root;
 const parseMarkdown: MarkdownParser = (source) => fromMarkdown(source, parseOptions);
 
+/** Copy the mutable fields in the CommonMark/GFM tree, including source positions. */
+function cloneMarkdownNode<T extends Nodes>(node: T): T {
+  const copy = { ...node };
+  if (copy.position)
+    copy.position = { start: { ...copy.position.start }, end: { ...copy.position.end } };
+  if (copy.type === "table" && copy.align) copy.align = [...copy.align];
+  if (copy.data) copy.data = structuredClone(copy.data);
+  return "children" in copy ? { ...copy, children: copy.children.map(cloneMarkdownNode) } : copy;
+}
+
 /** Cache syntax only. Each render owns its cache and mutating transforms get a private tree. */
 export function createMarkdownParser(): MarkdownParser {
   const trees = new Map<string, { root: Root; bytes: number }>();
@@ -49,7 +59,7 @@ export function createMarkdownParser(): MarkdownParser {
       sourceBytes += bytes;
     }
     trees.set(source, entry);
-    return mutable ? structuredClone(entry.root) : entry.root;
+    return mutable ? cloneMarkdownNode(entry.root) : entry.root;
   };
 }
 

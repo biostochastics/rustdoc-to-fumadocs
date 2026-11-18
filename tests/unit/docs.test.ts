@@ -25,6 +25,16 @@ it("isolates mutating Markdown transforms and bounds each render's parser cache"
   expect(original.children[0]).toMatchObject({ type: "heading", depth: 1 });
   expect(createMarkdownParser()(source)).not.toBe(original);
 
+  const tableSource = "| A | B |\n| :- | -: |\n| x | y |";
+  const table = parse(tableSource, true).children[0];
+  if (table.type !== "table") throw new Error("Expected a GFM table");
+  table.align![0] = null;
+  table.position!.start.line = 42;
+  expect(parse(tableSource).children[0]).toMatchObject({
+    align: ["left", "right"],
+    position: { start: { line: 1 } },
+  });
+
   const large = "x".repeat(65 * 1024);
   expect(parse(large)).not.toBe(parse(large));
   // Five individually cacheable documents exceed the aggregate source budget.

@@ -10,8 +10,8 @@ Use Node.js 20.19+ on the 20.x line, or 22.12+. Rust is needed to **produce** th
 
 ```sh
 npm ci
-npm pack
-npm install --global ./rustdoc-to-fumadocs-0.5.1.tgz
+archive=$(npm pack --silent)
+npm install --global "./$archive"
 rustdoc-to-fumadocs --version
 ```
 
@@ -66,14 +66,14 @@ Register `RequestTip` in the same component map as the Fumadocs components, or d
 
 ## Compatibility
 
-| Producer or consumer  | Coverage                                                                                                                                                                                                     |
-| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Rust and rustdoc JSON | Accepts formats 27–61. Real inputs exercise Rust 1.76 (27), 1.80 (30), 1.83 (35), 1.86 (39), 1.89 (53), 1.92 (56), 1.94 (57), 1.98 (60), and 1.99–1.100 (61). The November 17, 2026 nightly also emitted 61. |
-| Newer rustdoc formats | The generator warns, checks the shapes it consumes, and renders recognized items. A breaking change to a known shape produces a diagnostic identifying the JSON field.                                       |
-| Fumadocs Core and UI  | Next.js production builds exercise 14.7.7, 15.8.5, and 16.19.4 with real generated pages. The compatibility job also selects the latest npm release.                                                         |
-| Node.js               | The converter requires Node 20.19+ on 20.x or Node 22.12+. CI covers the 20, 22, 24, and 26 release lines. A consuming Next.js or Fumadocs toolchain can require a newer Node release.                       |
+| Producer or consumer  | Coverage                                                                                                                                                                                                                           |
+| --------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Rust and rustdoc JSON | Accepts formats 27–61. Real inputs exercise Rust 1.76 (27), 1.80 (30), 1.83 (35), 1.86 (39), 1.89 (53), 1.92 (56), 1.94 (57), 1.98 (60), and 1.99–1.100 (61). The November 17, 2026 nightly also emitted 61.                       |
+| Newer rustdoc formats | The generator warns, checks the shapes it consumes, and renders recognized items. A breaking change to a known shape produces a diagnostic identifying the JSON field.                                                             |
+| Fumadocs Core and UI  | Next.js production builds exercise 14.7.7, 15.8.5, and 16.19.4 with real generated pages. The compatibility job also selects the latest npm release.                                                                               |
+| Node.js               | The converter requires Node 20.19+ on 20.x or Node 22.12+. Every PR runs on Node 24. The manual compatibility workflow also covers Node 20, 22 and 26. A consuming Next.js or Fumadocs toolchain can require a newer Node release. |
 
-The Rust matrix generates fresh JSON on each toolchain and checks the rendered signatures, public aliases, internal links, and MDX in all three layouts. The Fumadocs matrix checks generated routes with the framework's loader and prerenders pages using its components. The latest v16 build uses the native Fumadocs MDX adapter. [Compatibility workflow](.github/workflows/ci.yml)
+The manual Rust matrix generates fresh JSON on each toolchain and checks the rendered signatures, public aliases, internal links, and MDX in all three layouts. The Fumadocs matrix checks generated routes with the framework's loader and prerenders pages using its components. The latest v16 build uses the native Fumadocs MDX adapter. [Compatibility workflow](.github/workflows/ci.yml)
 
 ## CLI
 
@@ -84,6 +84,8 @@ The Rust matrix generates fresh JSON on each toolchain and checks the rendered s
 | `-w, --workspace [dir]`                         | Generate a workspace reference. Defaults to the current directory.                                                                                                          |
 | `--target-dir <dir>`                            | Override `CARGO_TARGET_DIR` and the discovered Cargo target directory.                                                                                                      |
 | `--exclude <names>`                             | Skip named workspace packages or crate targets. Accepts repeated flags or comma-separated names.                                                                            |
+| `--require-complete`                            | In workspace mode, fail before publication if any selected input is missing or invalid. Explicitly excluded and unpublished members follow the selection flags.             |
+| `--workspace-cache-mib <N>`                     | Reuse workspace generators between passes within a budget of N MiB of raw input. Accepts nonnegative whole numbers. Defaults to 4. Set 0 to disable reuse.                  |
 | `--include-unpublished`                         | Include workspace packages with publishing disabled.                                                                                                                        |
 | `-o, --output <dir>`                            | Output directory. Defaults to `content/docs/api`.                                                                                                                           |
 | `-b, --base-url <path>`                         | Public URL of the output directory. Defaults to `/docs/api`.                                                                                                                |
@@ -91,6 +93,7 @@ The Rust matrix generates fresh JSON on each toolchain and checks the rendered s
 | `--no-index`                                    | Suppress module index pages. Links target available pages where possible.                                                                                                   |
 | `--no-tabs`, `--no-cards`                       | Disable implementation tabs or related-item cards.                                                                                                                          |
 | `--source-url-base <url>`, `--source-ref <ref>` | Link source spans and repository-relative documentation. A ref adds the GitHub-style `blob/<ref>` path.                                                                     |
+| `--list-files`                                  | Print ordered relative paths, one per line. Combine with `--json` for a `paths` array, status, and input diagnostics. Page rendering and byte counts are skipped.           |
 | `-n, --dry-run`                                 | Print a proposed file list and byte counts.                                                                                                                                 |
 | `--json`                                        | Print a machine-readable **preview**. The command leaves the output directory untouched.                                                                                    |
 | `-v, --verbose`                                 | List files in human-readable output.                                                                                                                                        |
@@ -105,15 +108,15 @@ rustdoc-to-fumadocs --workspace . --exclude xtask \
   --source-url-base https://github.com/example/project --source-ref v1.2.0
 ```
 
-Cargo metadata supplies workspace membership, inherited publish settings, target names, and the target directory. A TOML fallback handles explicit members, globs, excludes, root packages, and renamed libraries on hosts with prebuilt JSON. The converter indexes member routes first, then reloads and renders one member at a time. The workspace landing page links to each documented crate. For packages with multiple binary targets, select a specific target with `--input` when needed.
+Cargo metadata supplies workspace membership, inherited publish settings, target names, and the target directory. A TOML fallback handles explicit members, globs, excludes, root packages, and renamed libraries on hosts with prebuilt JSON. The converter indexes member routes first, then verifies each input digest and renders one member at a time. Small validated members can be reused within the cache budget. The budget measures source bytes, so process memory can exceed it. The workspace landing page links to each documented crate. For packages with multiple binary targets, select a specific target with `--input` when needed.
 
-Missing member inputs produce warnings. A preview reports `status: "partial"` and a `workspace.skipped` list when some members were skipped. A run with zero usable members exits with an error. To require complete coverage in CI, check the preview before writing.
+Missing member inputs produce warnings. A preview reports `status: "partial"` and a `workspace.skipped` list when some members were skipped. A run with zero usable members exits with an error. Use `--require-complete` in CI to check coverage and publish in one invocation. A strict failure reports skipped members and preserves the previous output.
 
 ```sh
-rustdoc-to-fumadocs --workspace --json > api-preview.json
-jq -e '.success and .status == "complete"' api-preview.json
-rustdoc-to-fumadocs --workspace --output content/docs/api
+rustdoc-to-fumadocs --workspace --require-complete --output content/docs/api
 ```
+
+For a route inventory, run `rustdoc-to-fumadocs --workspace --list-files --json` and read `.paths[]`. This includes sidebar metadata and workspace landing files. Use `--json` alone when you need UTF-8 byte counts or rendering diagnostics. All preview modes leave the output directory untouched.
 
 ### Regeneration
 
@@ -184,6 +187,8 @@ const generator = new RustdocGenerator(crate, {
 const files = generator.generate();
 ```
 
+`generate()` returns the complete array. Iterate over `generateFiles()` to render and consume one complete file at a time, or over `filePaths()` to inspect paths without rendering. Both iterators follow publication order. With kind grouping, each shared kind page is one file.
+
 Supply a `frontmatter(item, path)` callback to customize item and module page metadata such as titles, descriptions, and icons. Use `pageIndex()` and `setExternalPages()` to connect independently generated crates. `landingUrl()` returns an emitted destination or `null` for an empty indexless crate.
 
 ### Document private items
@@ -212,7 +217,7 @@ const generator = new RustdocGenerator(crate, {
   filter: () => true,
 });
 
-for (const file of generator.generate()) {
+for (const file of generator.generateFiles()) {
   const dest = join(output, file.path);
   await mkdir(dirname(dest), { recursive: true });
   await writeFile(dest, file.content);

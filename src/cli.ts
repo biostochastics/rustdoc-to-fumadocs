@@ -25,7 +25,8 @@ import type { WorkspaceMember } from "./workspace.js";
  */
 const MAX_INPUT_SIZE_BYTES = 100 * 1024 * 1024;
 // Limit the combined source size of workspace members kept between passes.
-const WORKSPACE_CACHE_INPUT_BYTES = 4 * 1024 * 1024;
+const DEFAULT_WORKSPACE_CACHE_MIB = 4;
+const MIB = 1024 * 1024;
 
 export interface CliArgs {
   input?: string;
@@ -53,6 +54,9 @@ export interface CliArgs {
   exclude: string[];
   /** Also document workspace members with `publish = false`. */
   includeUnpublished: boolean;
+  requireComplete: boolean;
+  workspaceCacheMiB?: number;
+  listFiles: boolean;
   output: string;
   baseUrl: string;
   groupBy: "module" | "kind" | "flat";
@@ -79,6 +83,8 @@ export interface JsonOutput {
     formatVersion: number;
   };
   files?: { path: string; size: number }[];
+  /** Ordered relative paths for --list-files --json. */
+  paths?: string[];
   stats?: {
     totalFiles: number;
     totalBytes: number;
@@ -131,6 +137,8 @@ export function parseArgs(argv: string[]): CliArgs {
     version: false,
     exclude: [],
     includeUnpublished: false,
+    requireComplete: false,
+    listFiles: false,
   };
 
   const requireValue = (flag: string, next: string | undefined, label: string): string => {
@@ -207,6 +215,22 @@ export function parseArgs(argv: string[]): CliArgs {
       case "--source-ref":
         result.sourceRef = requireValue(arg, argv[++i], "a git ref argument");
         break;
+      case "--list-files":
+        result.listFiles = true;
+        break;
+      case "--require-complete":
+        result.requireComplete = true;
+        break;
+      case "--workspace-cache-mib": {
+        const raw = requireValue(arg, argv[++i], "a nonnegative whole number of MiB");
+        const mib = Number(raw);
+        if (!/^\d+$/.test(raw) || !Number.isSafeInteger(mib * MIB))
+          throw new ArgParseError(
+            "Invalid --workspace-cache-mib: expected a nonnegative whole number of MiB"
+          );
+        result.workspaceCacheMiB = mib;
+        break;
+      }
       case "--exclude":
         result.exclude.push(
           ...requireValue(arg, argv[++i], "a crate name argument")
@@ -240,6 +264,13 @@ export function parseArgs(argv: string[]): CliArgs {
     }
   }
 
+  if (
+    result.workspace === undefined &&
+    (result.requireComplete || result.workspaceCacheMiB !== undefined)
+  )
+    throw new ArgParseError(
+      "--require-complete and --workspace-cache-mib are workspace options. Use --workspace."
+    );
   return result;
 }
 
@@ -262,7 +293,9 @@ Input
                            Takes precedence over --input and --crate
   --target-dir <dir>       Use <dir>/doc for crate or workspace inputs
   --exclude <crates>       Skip members by name (repeat or use a comma-separated list)
-  --include-unpublished    Include workspace members with publish = false
+  --include-unpublished    Include workspace members with publishing disabled
+  --require-complete       Fail before publishing if a selected workspace member is skipped
+  --workspace-cache-mib N  Cache up to N MiB of workspace inputs (default: 4, 0 disables)
 
 Output
   -o, --output <dir>       Write pages here (default: content/docs/api)
@@ -275,6 +308,8 @@ Output
   --no-cards               Omit related-item cards
 
 Preview and reporting
+  --list-files             List planned paths, one per line, without rendering or writing
+                           Add --json for an ordered paths array and workspace status
   -n, --dry-run            Preview paths and sizes without writing
   --json                   Print the preview as JSON without writing
   -v, --verbose            List each file and its size during a conversion
@@ -422,7 +457,7 @@ async function generate(args: CliArgs, streams: CliStreams): Promise<number> {
     streams.stderr(`Warning: ${msg}\n`);
   };
   const log = (msg: string): void => {
-    if (!args.json) streams.stdout(msg + "\n");
+    if (!args.json && !args.listFiles) streams.stdout(msg + "\n");
   };
   const output = resolve(args.output);
   const options = (name?: string): GeneratorOptions => ({
@@ -441,19 +476,33 @@ async function generate(args: CliArgs, streams: CliStreams): Promise<number> {
   const stats = { totalFiles: 0, totalBytes: 0, mdxFiles: 0, metaFiles: 0 };
   let transaction: OutputTransaction | undefined;
   const preview = args.dryRun || args.json;
-  const accept = async (batch: GeneratedFile[]): Promise<void> => {
-    if (!preview) {
+  const paths: string[] = [];
+  const accept = async (generated: Iterable<GeneratedFile>): Promise<void> => {
+    let batch: GeneratedFile[] = [];
+    let batchBytes = 0;
+    const flush = async (): Promise<void> => {
       transaction ??= await OutputTransaction.open(output);
       await transaction.add(batch);
-    }
-    for (const f of batch) {
+      batch = [];
+      batchBytes = 0;
+    };
+    for (const f of generated) {
       const size = Buffer.byteLength(f.content);
       stats.totalFiles++;
       stats.totalBytes += size;
       if (f.path.endsWith(".mdx")) stats.mdxFiles++;
       if (f.path.endsWith(".json")) stats.metaFiles++;
       if (preview || args.verbose) files.push({ path: f.path, size });
+      if (!preview) {
+        batch.push(f);
+        batchBytes += size;
+        if (batch.length >= 128 || batchBytes >= 512 * 1024) await flush();
+      }
     }
+    if (batch.length) await flush();
+  };
+  const list = (generator: RustdocGenerator): void => {
+    for (const path of generator.filePaths()) paths.push(path);
   };
   let owner = "workspace";
   let crateInfo: JsonOutput["crate"];
@@ -480,7 +529,7 @@ async function generate(args: CliArgs, streams: CliStreams): Promise<number> {
         landingUrl: string | null;
         generator?: RustdocGenerator;
       }[] = [];
-      let remainingCacheBytes = WORKSPACE_CACHE_INPUT_BYTES;
+      let remainingCacheBytes = (args.workspaceCacheMiB ?? DEFAULT_WORKSPACE_CACHE_MIB) * MIB;
       const pages = new Map<string, string>();
       const roots = new Set<string>();
       for (const member of members) {
@@ -510,8 +559,10 @@ async function generate(args: CliArgs, streams: CliStreams): Promise<number> {
             `Multiple workspace members use the output directory ${root}`
           );
         roots.add(root.toLowerCase());
-        for (const [key, url] of generator.pageIndex()) if (!pages.has(key)) pages.set(key, url);
-        const retain = content.length <= remainingCacheBytes;
+        if (args.listFiles) list(generator);
+        else
+          for (const [key, url] of generator.pageIndex()) if (!pages.has(key)) pages.set(key, url);
+        const retain = !args.listFiles && content.length <= remainingCacheBytes;
         if (retain) remainingCacheBytes -= content.length;
         prepared.push({
           member,
@@ -532,6 +583,15 @@ async function generate(args: CliArgs, streams: CliStreams): Promise<number> {
             context: { skipped },
           }
         );
+      if (args.requireComplete && skipped.length)
+        throw new RustdocError(
+          ErrorCode.INPUT_READ_FAILED,
+          `Incomplete workspace: ${skipped.length} member(s) skipped.`,
+          {
+            hint: "Provide rustdoc JSON for each selected member or exclude optional packages.",
+            context: { skipped },
+          }
+        );
       const nav: WorkspaceMember[] = [];
       log(
         `Rendering ${prepared.length} workspace member${prepared.length === 1 ? "" : "s"} from ${ws.rootDir}`
@@ -543,21 +603,24 @@ async function generate(args: CliArgs, streams: CliStreams): Promise<number> {
             ErrorCode.INPUT_READ_FAILED,
             `Rustdoc input changed during generation: ${p.path}. Retry the conversion.`
           );
+        if (args.listFiles) continue;
         const gen =
           p.generator ??
           new RustdocGenerator(validate(content, p.path).crate, options(p.member.name));
         p.generator = undefined;
         gen.setExternalPages(pages);
-        await accept(gen.generate());
+        await accept(gen.generateFiles());
         nav.push({ ...p.member, name: p.root, landingUrl: p.landingUrl });
       }
-      await accept([
-        { path: "meta.json", content: renderWorkspaceMeta(nav, "API") },
-        {
-          path: "index.mdx",
-          content: renderWorkspaceIndex(basename(ws.rootDir), nav, args.baseUrl),
-        },
-      ]);
+      if (args.listFiles) paths.push("meta.json", "index.mdx");
+      else
+        await accept([
+          { path: "meta.json", content: renderWorkspaceMeta(nav, "API") },
+          {
+            path: "index.mdx",
+            content: renderWorkspaceIndex(basename(ws.rootDir), nav, args.baseUrl),
+          },
+        ]);
       workspaceInfo = { generated: prepared.map((p) => p.member.name), skipped };
     } else {
       const { path, packageName } = await singleInput(args);
@@ -571,7 +634,9 @@ async function generate(args: CliArgs, streams: CliStreams): Promise<number> {
         formatVersion: input.crate.format_version,
       };
       log(`Loaded crate: ${name} (format version ${input.crate.format_version})`);
-      await accept(new RustdocGenerator(input.crate, options(packageName)).generate());
+      const generator = new RustdocGenerator(input.crate, options(packageName));
+      if (args.listFiles) list(generator);
+      else await accept(generator.generateFiles());
     }
     const published = await transaction?.commit(owner, !workspaceInfo?.skipped.length);
     if (args.json) {
@@ -582,14 +647,15 @@ async function generate(args: CliArgs, streams: CliStreams): Promise<number> {
             status: workspaceInfo?.skipped.length ? "partial" : "complete",
             crate: crateInfo,
             workspace: workspaceInfo,
-            files,
-            stats,
+            ...(args.listFiles ? { paths } : { files, stats }),
             warnings: warnings.size ? [...warnings] : undefined,
           },
           null,
           2
         ) + "\n"
       );
+    } else if (args.listFiles) {
+      for (const path of paths) streams.stdout(path + "\n");
     } else {
       if (args.dryRun) log("DRY RUN — preview only");
       log(

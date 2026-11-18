@@ -2,6 +2,19 @@
 
 November 17, 2026 · rustdoc-to-fumadocs 0.5.0 and 0.5.1
 
+## Implemented results on the review branch
+
+The complete implementation combines path discovery, strict workspace publication, the bundled CLI, file iteration and the renderer changes. Each cell is a median of five interleaved fresh Node 22.17.1 processes per variant after one warm-up on local APFS. The baseline is the converter at `b02dc87`. Both full previews produced identical reports, the path lists matched those reports, and the two workspace publication workflows produced identical manifests. [Timing and peak RSS samples](benchmarks/workspace-preview.json)
+
+| Input                         | Baseline full preview | Implemented full preview | Implemented path list |
+| ----------------------------- | --------------------: | -----------------------: | --------------------: |
+| Minimal fixture               |                114 ms |                    65 ms |                 59 ms |
+| `syn`                         |                546 ms |                   478 ms |                152 ms |
+| Six-crate workspace           |                956 ms |                   895 ms |                242 ms |
+| 32,000 undocumented functions |                651 ms |                   400 ms |                304 ms |
+
+The six-crate strict publication took 973 ms versus 1,986 ms for the baseline preview followed by publication. Full workspace preview peak RSS rose from 282 to 292 MiB. Listing workspace paths used 154 MiB. On the 32,000-function input, full preview peak RSS fell from 290 to 254 MiB. The shipped Markdown copy preserves private source positions as well as node contents. The following prototype measurements describe individual experiments before integration.
+
 ## Further opportunities after `e521a8c`
 
 For CI that requires every workspace member, the largest measured saving came from checking completeness in the same invocation that publishes. For full conversions, split CLI packaging helped small inputs most. For library consumers, the biggest memory saving came from releasing each large rendered page after consuming it. The figures below are isolated experiments against `e521a8c`. Each median comes from five fresh Node 22.17.1 processes per input and variant after one warm-up, with shuffled run order on an Apple M4 Pro and warm local APFS. [Timing, RSS and input fingerprints](benchmarks/further-opportunities.json)

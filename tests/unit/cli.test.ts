@@ -124,6 +124,17 @@ describe("parseArgs", () => {
     expect(parseArgs(["-g", "flat"]).groupBy).toBe("flat");
   });
 
+  it("accepts whole workspace cache budgets and rejects ambiguous workspace flags", () => {
+    for (const mib of [0, 4, 12])
+      expect(
+        parseArgs(["--workspace-cache-mib", String(mib), "--workspace"]).workspaceCacheMiB
+      ).toBe(mib);
+    for (const value of ["-1", "1.5", "Infinity", "1e3", "99999999999999999"])
+      expect(() => parseArgs(["--workspace", "--workspace-cache-mib", value])).toThrow();
+    expect(() => parseArgs(["--require-complete"])).toThrow(/workspace/);
+    expect(() => parseArgs(["--workspace-cache-mib", "0"])).toThrow(/workspace/);
+  });
+
   it("sets help flag for -h and --help", () => {
     expect(parseArgs(["-h"]).help).toBe(true);
     expect(parseArgs(["--help"]).help).toBe(true);
@@ -449,6 +460,35 @@ describe("run() - --workspace mode", () => {
     );
   }
 
+  it("lists workspace files in publication order without opening the output directory", async () => {
+    await makeWorkspace(join(tmp, "target"));
+    const dest = join(tmp, "new");
+    const args = [
+      "--workspace",
+      tmp,
+      "--require-complete",
+      "--workspace-cache-mib",
+      "0",
+      "--output",
+      dest,
+    ];
+    const full = captureStreams();
+    expect(await run([...args, "--json"], full.streams)).toBe(0);
+    const paths = (JSON.parse(full.stdout()).files as { path: string }[]).map((f) => f.path);
+    const listing = captureStreams();
+    expect(await run([...args, "--list-files", "--json"], listing.streams)).toBe(0);
+    expect(JSON.parse(listing.stdout())).toEqual({
+      success: true,
+      status: "complete",
+      workspace: { generated: ["testy"], skipped: [] },
+      paths,
+    });
+    const plain = captureStreams();
+    expect(await run([...args, "--list-files"], plain.streams)).toBe(0);
+    expect(plain.stdout()).toBe(paths.join("\n") + "\n");
+    await expect(readdir(dest)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
   it("reads rustdoc JSON from --target-dir", async () => {
     const target = join(tmp, "elsewhere");
     await makeWorkspace(target);
@@ -552,6 +592,32 @@ describe("run() - --workspace mode", () => {
     ).toBe(0);
     meta = JSON.parse(await readFile(join(out2, "meta.json"), "utf-8")) as { pages: string[] };
     expect(meta.pages).toEqual(["index", "pub_crate", "tool_crate"]);
+  });
+
+  it("rejects partial strict publication and preserves the previous complete tree", async () => {
+    await makeTwoMemberWorkspace();
+    const out = join(tmp, "existing");
+    const args = [
+      "--workspace",
+      tmp,
+      "--include-unpublished",
+      "--require-complete",
+      "--output",
+      out,
+    ];
+    expect(await run(args, captureStreams().streams)).toBe(0);
+    const manifestPath = join(out, ".rustdoc-to-fumadocs.manifest");
+    const manifest = await readFile(manifestPath);
+    await rm(join(tmp, "target/doc/tool.json"));
+    const failure = captureStreams();
+    expect(await run(args, failure.streams)).toBe(1);
+    expect(failure.stderr()).toMatch(/Incomplete workspace/);
+    expect(await readFile(manifestPath)).toEqual(manifest);
+    expect(await readFile(join(out, "tool_crate/index.mdx"), "utf8")).toContain("tool_crate");
+    const json = captureStreams();
+    expect(await run([...args, "--list-files", "--json"], json.streams)).toBe(1);
+    expect(JSON.parse(json.stdout()).error.context.skipped[0].name).toBe("tool");
+    expect(await run([...args, "--exclude", "tool"], captureStreams().streams)).toBe(0);
   });
 
   it("excludes members named with --exclude", async () => {

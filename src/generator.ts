@@ -107,6 +107,8 @@ const KIND_ORDER: readonly ItemKind[] = [
 
 /** Item kinds that get their own page (or kind-page section). */
 const PAGE_KINDS: ReadonlySet<ItemKind> = new Set(KIND_ORDER);
+const MEMBER_BEARING_KINDS: ReadonlySet<ItemKind> = new Set(["struct", "enum", "union", "trait"]);
+const EMPTY_ANCHORS: ReadonlyMap<string, string> = new Map();
 
 /**
  * One item page placed in a module of the {@link ModuleNode} plan. The same
@@ -129,6 +131,7 @@ interface PageEntry {
   anchor?: string;
   /** Allocated on the first doc link that tests a member heading at this placement. */
   memberHeadings?: Set<string>;
+  linkableFields?: Set<string>;
   /** cfg predicates the item is gated on, module gates included. */
   gates: Cfg[];
 }
@@ -679,25 +682,40 @@ export class RustdocGenerator {
    * @throws RustdocError if root item is missing or not a module
    */
   generate(): GeneratedFile[] {
+    return Array.from(this.generateFiles());
+  }
+
+  /** Iterate in publication order, rendering each complete file on demand. */
+  *generateFiles(): IterableIterator<GeneratedFile> {
     const plan = this.buildPlan();
     if (!this.membersIndexed) {
       this.buildMemberUrls(plan);
       this.membersIndexed = true;
     }
-    const files: GeneratedFile[] = [];
-    const previousParser = this.parseMarkdown;
-    this.parseMarkdown = createMarkdownParser();
-    try {
-      this.renderNode(plan, files);
-    } finally {
-      this.parseMarkdown = previousParser;
+    const parser = createMarkdownParser();
+    for (const { path, render } of this.plannedFiles(plan)) {
+      // A caller can pause or interleave iterators. Install this iterator's
+      // parser only while rendering, and restore it before yielding control.
+      const previousParser = this.parseMarkdown;
+      this.parseMarkdown = parser;
+      let content: string;
+      try {
+        content = render();
+      } finally {
+        this.parseMarkdown = previousParser;
+      }
+      yield { path, content };
     }
     if (this.missingRefCount > RustdocGenerator.MAX_VERBOSE_MISSING_REFS) {
       this.options.onWarning(
         `Total missing item references: ${this.missingRefCount} (only first ${RustdocGenerator.MAX_VERBOSE_MISSING_REFS} shown)`
       );
     }
-    return files;
+  }
+
+  /** Enumerate output paths without rendering content or running frontmatter hooks. */
+  *filePaths(): IterableIterator<string> {
+    for (const file of this.plannedFiles(this.buildPlan())) yield file.path;
   }
 
   /**
@@ -1237,15 +1255,15 @@ export class RustdocGenerator {
     if (member.startsWith("structfield.")) {
       const field = this.fieldsAnchor(page);
       const url = page.url.split("#")[0] + "#" + field;
-      const ids = this.fieldIds(page.item);
-      const name = member.slice("structfield.".length);
-      if (
-        !ids.some(
-          (id) =>
-            id != null && this.getItem(id)?.name === name && this.memberUrls.get(String(id)) === url
-        )
-      )
-        return page.url;
+      if (!page.linkableFields) {
+        page.linkableFields = new Set();
+        for (const id of this.fieldIds(page.item)) {
+          if (id == null || this.memberUrls.get(String(id)) !== url) continue;
+          const name = this.getItem(id)?.name;
+          if (name != null) page.linkableFields.add(name);
+        }
+      }
+      if (!page.linkableFields.has(member.slice("structfield.".length))) return page.url;
       anchor = field;
     } else if (/^(method|associatedtype|associatedconstant|variant)\./.test(member)) {
       // A trait implementation can inherit a method without documenting a
@@ -1299,6 +1317,7 @@ export class RustdocGenerator {
   }
 
   private summary(item: Item): string {
+    if (!item.docs) return "";
     let summary = this.summaries.get(item.id);
     if (summary === undefined) {
       summary = summaryMarkdown(this.docsFor(item, 0), this.parseMarkdown);
@@ -1440,7 +1459,8 @@ export class RustdocGenerator {
    * `variant.<Name>` for enum variants. Struct and union fields map to the
    * page's `fields` heading. Duplicates get a numeric suffix.
    */
-  private anchorsFor(page: PageEntry): Map<string, string> {
+  private anchorsFor(page: PageEntry): ReadonlyMap<string, string> {
+    if (!MEMBER_BEARING_KINDS.has(page.kind)) return EMPTY_ANCHORS;
     const item = page.item;
     const key = page.url;
     const cached = this.anchorCache.get(key);
@@ -1572,36 +1592,35 @@ export class RustdocGenerator {
     );
   }
 
-  /** Render one module node (index, meta.json, pages) and its submodules. */
-  private renderNode(node: ModuleNode, files: GeneratedFile[]): void {
+  /** Enumerate each destination and defer its content until a consumer requests it. */
+  private *plannedFiles(
+    node: ModuleNode
+  ): IterableIterator<{ path: string; render: () => string }> {
     const dirPath = this.outputDirectory(node).join("/");
-
     if (this.options.generateIndex) {
-      files.push({
+      yield {
         path: `${dirPath}/${this.moduleIndexFile(node)}.mdx`,
-        content: this.generateModuleIndex(node),
-      });
+        render: () => this.generateModuleIndex(node),
+      };
     }
     if (!node.parent || this.options.groupBy !== "flat") {
-      files.push({ path: `${dirPath}/meta.json`, content: this.generateMeta(node) });
+      yield { path: `${dirPath}/meta.json`, render: () => this.generateMeta(node) };
     }
-
     if (this.options.groupBy === "kind") {
       for (const kind of KIND_ORDER) {
         const pages = node.pages.filter((p) => p.kind === kind);
-        if (pages.length === 0) continue;
-        files.push({
-          path: `${dirPath}/${kindToFilename(kind)}.mdx`,
-          content: this.generateKindPage(kind, pages, node),
-        });
+        if (pages.length)
+          yield {
+            path: `${dirPath}/${kindToFilename(kind)}.mdx`,
+            render: () => this.generateKindPage(kind, pages, node),
+          };
       }
     } else {
       for (const page of node.pages) {
-        files.push({ path: `${dirPath}/${page.file}.mdx`, content: this.generateItemPage(page) });
+        yield { path: `${dirPath}/${page.file}.mdx`, render: () => this.generateItemPage(page) };
       }
     }
-
-    for (const sub of node.submodules) this.renderNode(sub, files);
+    for (const sub of node.submodules) yield* this.plannedFiles(sub);
   }
 
   /**
@@ -2204,7 +2223,7 @@ export class RustdocGenerator {
     // Safety callout for unsafe items
     const isUnsafe = this.isUnsafeItem(item);
     if (isUnsafe) {
-      const safety = this.calloutsFor(item).sections.get("Safety");
+      const safety = item.docs && this.calloutsFor(item).sections.get("Safety");
       sections.push(safety ? renderCallout("error", "Safety", safety) : renderSafetyCallout());
       sections.push("");
     }
@@ -2264,7 +2283,7 @@ export class RustdocGenerator {
       sections.unshift(heading + " [#" + page.anchor + "]", "");
     }
 
-    if (kind === "function") {
+    if (kind === "function" && item.docs) {
       const callouts = this.calloutsFor(item).sections;
       for (const title of ["Panics", "Errors"]) {
         const content = callouts.get(title);
@@ -3064,7 +3083,15 @@ export class RustdocGenerator {
    * @returns YAML frontmatter block with --- delimiters
    */
   private formatFrontmatter(data: Record<string, unknown>): string {
-    // Use yaml library for proper escaping of special characters
+    // Only the default three short, plain strings have this exact quoted YAML
+    // representation. Custom frontmatter and values needing escapes or wrapping
+    // continue through the configured YAML serializer.
+    if (!this.options.frontmatter && Object.keys(data).length === 3) {
+      const { title, description, icon } = data;
+      if (isShortYamlString(title) && isShortYamlString(description) && isShortYamlString(icon)) {
+        return `---\ntitle: "${title}"\ndescription: "${description}"\nicon: "${icon}"\n---`;
+      }
+    }
     const yamlContent = stringify(data, {
       lineWidth: 120, // Reasonable line width for readability
       defaultStringType: "QUOTE_DOUBLE", // Quote strings by default for safety
@@ -3124,6 +3151,10 @@ export class RustdocGenerator {
       icon: kind === "unknown" ? "FileText" : kindToIcon(kind),
     };
   }
+}
+
+function isShortYamlString(value: unknown): value is string {
+  return typeof value === "string" && value.length < 90 && !/[^A-Za-z0-9 _.,!?'-]/.test(value);
 }
 
 /** Map every occupied anchor to the next numeric suffix to try for that base. */

@@ -82,6 +82,8 @@ npm run test:run       # Single run
 npm run test:coverage  # With coverage
 ```
 
+Pull requests run format, lint, type, coverage and packed-CLI checks on one Node 24 Ubicloud runner. Dispatch the CI workflow manually for the additional Node, operating system, Rust producer and Fumadocs consumer matrices.
+
 ## Creating a Changeset
 
 When making user-facing changes, create a changeset:

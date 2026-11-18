@@ -6,8 +6,8 @@ The CLI requires Node.js 20.19+ on the 20.x line, or 22.12+. To use the version 
 git clone https://github.com/biostochastics/rustdoc-to-fumadocs.git
 cd rustdoc-to-fumadocs
 npm ci
-npm pack
-npm install --global ./rustdoc-to-fumadocs-0.5.1.tgz
+archive=$(npm pack --silent)
+npm install --global "./$archive"
 rustdoc-to-fumadocs --version
 ```
 

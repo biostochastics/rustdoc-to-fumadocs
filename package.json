@@ -48,7 +48,7 @@
     "EXTERNAL_LICENSES.md"
   ],
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && node --import tsx scripts/build-cli.mts",
     "dev": "tsx src/cli.ts",
     "generate": "tsx src/cli.ts",
     "test": "vitest",
@@ -87,6 +87,7 @@
     "@types/mdast": "^4.0.4",
     "@types/node": "^20.11.0",
     "@vitest/coverage-v8": "^4.1.12",
+    "esbuild": "^0.27.2",
     "eslint": "^9.39.2",
     "eslint-config-prettier": "^10.1.8",
     "github-slugger": "^2.0.0",

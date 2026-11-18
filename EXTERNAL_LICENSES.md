@@ -15,7 +15,7 @@ This document acknowledges the third-party software used by rustdoc-to-fumadocs 
 | [yaml](https://www.npmjs.com/package/yaml)                                         | Serialize page frontmatter            | ISC          |
 | [zod](https://www.npmjs.com/package/zod)                                           | Validate rustdoc data                 | MIT          |
 
-The lockfile records the resolved versions. Installed packages include their license notices.
+The lockfile records the resolved versions. Installed packages include their license notices. The packaged CLI also includes the bundled dependencies’ notices in `dist/cli-chunks/THIRD-PARTY-NOTICES.txt`.
 
 ## Installed notices
 

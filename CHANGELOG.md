@@ -6,6 +6,21 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Rel
 
 ## Unreleased
 
+### Added
+
+- List planned output paths with `--list-files` or `RustdocGenerator.filePaths()`. Add `--json` for an ordered `paths` array and workspace status.
+- Require complete workspace coverage before writing with `--require-complete`. Set `--workspace-cache-mib N` to control how much input can be reused between passes. The default is 4 MiB.
+- Consume rendered files in publication order using the synchronous `generateFiles()` iterator. The existing `generate()` method returns the full array.
+
+### Changed
+
+- Bundle the CLI with lazy-loaded dependencies, stage output in bounded batches, and streamline default frontmatter, member lookups and Markdown processing. Fresh single-crate publication can install a verified staging directory with one rename.
+- Speed up rustdoc validation and short Markdown summaries. Preserve custom frontmatter, output ordering and the full byte-count preview.
+
+### Fixed
+
+- Preserve pages when a filename changes capitalization and retain independent additions during rollback after a publication error.
+
 ## 0.5.1 - 2026-11-17
 
 ### Changed
