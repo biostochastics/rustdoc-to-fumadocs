@@ -122,6 +122,17 @@ function firstLine(docs: string | null | undefined): string {
   return docs?.split("\n")[0]?.trim() ?? "";
 }
 
+/**
+ * Wrap text in a Markdown code span, using a longer backtick fence when the
+ * text itself contains backticks (CommonMark §6.1).
+ */
+export function inlineCode(text: string): string {
+  const longest = Math.max(0, ...(text.match(/`+/g) ?? []).map((run) => run.length));
+  const fence = "`".repeat(longest + 1);
+  const pad = text.startsWith("`") || text.endsWith("`") ? " " : "";
+  return `${fence}${pad}${text}${pad}${fence}`;
+}
+
 /** URL-encode one path segment of a generated page. */
 function encodeSegment(segment: string): string {
   return encodeURIComponent(segment);
@@ -1711,9 +1722,7 @@ export class RustdocGenerator {
         for (const fieldId of fields) {
           const field = this.getItem(fieldId);
           if (!field) continue;
-          sections.push(
-            `- \`${field.name}\`: ${this.formatFieldType(field)}${field.docs ? ` - ${field.docs.split("\n")[0]}` : ""}`
-          );
+          sections.push(this.fieldLine(field.name ?? "_", field));
         }
       }
     }
@@ -1766,9 +1775,7 @@ export class RustdocGenerator {
       for (const fieldId of union.fields) {
         const field = this.getItem(fieldId);
         if (!field) continue;
-        sections.push(
-          `- \`${field.name}\`: ${this.formatFieldType(field)}${field.docs ? ` - ${field.docs.split("\n")[0]}` : ""}`
-        );
+        sections.push(this.fieldLine(field.name ?? "_", field));
       }
     }
 
@@ -1854,9 +1861,7 @@ export class RustdocGenerator {
             for (const fieldId of fields) {
               const field = this.getItem(fieldId);
               if (!field) continue;
-              const fieldType = this.formatFieldType(field);
-              const fieldDoc = field.docs ? ` - ${field.docs.split("\n")[0]}` : "";
-              sections.push(`- \`${field.name}\`: \`${fieldType}\`${fieldDoc}`);
+              sections.push(this.fieldLine(field.name ?? "_", field));
             }
           }
         }
@@ -1871,9 +1876,7 @@ export class RustdocGenerator {
             for (let i = 0; i < tupleFields.length; i++) {
               const field = this.getItem(tupleFields[i]);
               if (!field) continue;
-              const fieldType = this.formatFieldType(field);
-              const fieldDoc = field.docs ? ` - ${field.docs.split("\n")[0]}` : "";
-              sections.push(`- \`${i}\`: \`${fieldType}\`${fieldDoc}`);
+              sections.push(this.fieldLine(String(i), field));
             }
           }
         }
@@ -2320,6 +2323,16 @@ export class RustdocGenerator {
       defaultKeyType: "PLAIN", // Keep keys unquoted
     }).trim();
     return `---\n${yamlContent}\n---`;
+  }
+
+  /**
+   * One `- \`name\`: \`Type\` - first doc line` bullet for a struct, union
+   * or variant field. The type is always inline code: rendered bare,
+   * `Option<String>` or `Vec<[u8; 32]>` would be parsed by MDX as JSX.
+   */
+  private fieldLine(name: string, field: Item): string {
+    const doc = firstLine(field.docs);
+    return `- ${inlineCode(name)}: ${inlineCode(this.formatFieldType(field))}${doc ? ` - ${doc}` : ""}`;
   }
 
   /**

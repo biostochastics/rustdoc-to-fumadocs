@@ -3,7 +3,7 @@
  */
 
 import { describe, it, expect } from "vitest";
-import { sanitizePath, sanitizeDocstring } from "../../src/generator.js";
+import { sanitizePath, sanitizeDocstring, inlineCode } from "../../src/generator.js";
 
 describe("sanitizePath", () => {
   describe("path traversal prevention", () => {
@@ -241,5 +241,16 @@ describe("sanitizeDocstring", () => {
   it("handles empty and null inputs gracefully", () => {
     expect(sanitizeDocstring("")).toBe("");
     expect(sanitizeDocstring(undefined as unknown as string)).toBe(undefined as unknown as string);
+  });
+});
+
+describe("inlineCode", () => {
+  it("wraps plain types in single backticks", () => {
+    expect(inlineCode("Vec<[u8; 32]>")).toBe("`Vec<[u8; 32]>`");
+  });
+
+  it("uses a longer fence when the text contains backticks", () => {
+    expect(inlineCode("a`b")).toBe("``a`b``");
+    expect(inlineCode("`x`")).toBe("`` `x` ``");
   });
 });
