@@ -17,19 +17,23 @@
  * ```
  */
 
+import { posix } from "node:path";
 import { stringify } from "yaml";
 import type {
   RustdocCrate,
   Item,
+  ItemSummary,
+  ExternalCrate,
   ItemKind,
   Id,
   VariantKind,
   Type,
-  Attribute,
   GenericArgs,
 } from "./types.js";
 import { getItemKind, isPlainStruct, getPathName } from "./types.js";
 import { RustdocError, ErrorCode } from "./errors.js";
+import { rewriteDocLinks, demoteHeadings, summaryLine, takeSection } from "./docs.js";
+import { itemCfgs, dedupeCfgs, describeCfgs, requiredFeatures, type Cfg } from "./cfg.js";
 
 /**
  * Maximum recursion depth for module processing.
@@ -63,7 +67,212 @@ const KIND_ORDER: readonly ItemKind[] = [
   "constant",
   "static",
   "macro",
+  "proc_derive",
+  "proc_attribute",
 ] as const;
+
+/** Item kinds that get their own page (or kind-page section). */
+const PAGE_KINDS: ReadonlySet<ItemKind> = new Set(KIND_ORDER);
+
+/**
+ * One item page placed in a module of the {@link ModuleNode} plan. The same
+ * item can be placed more than once (`#[doc(inline)]` re-exports); the first
+ * placement is its canonical URL.
+ */
+interface PageEntry {
+  item: Item;
+  /** Name in this module: the `use` name for renamed re-exports. */
+  name: string;
+  /** File name (without `.mdx`), unique within the module directory. */
+  file: string;
+  kind: ItemKind;
+  node: ModuleNode;
+  /** The `use` item this page was inlined through, if any. */
+  via: Item | undefined;
+  /** Absolute URL of the page (or kind-page anchor). */
+  url: string;
+  /** cfg predicates the item is gated on, module gates included. */
+  gates: Cfg[];
+}
+
+/** A `pub use` that points at an item documented elsewhere. */
+interface ReexportEntry {
+  name: string;
+  source: string;
+  isGlob: boolean;
+  /** Resolved link for local targets; external targets resolve at render time. */
+  href: string | null;
+  /** Target id of an external re-export, resolved when the index renders. */
+  targetId?: Id;
+  /** Local target, whose summary line is read when the index renders. */
+  target?: Item;
+  kind?: string;
+}
+
+/** A module of the resolved public API (a directory of the output). */
+interface ModuleNode {
+  item: Item;
+  /** Name as seen by users (the `use` name for an inlined module). */
+  name: string;
+  /** Output directory segments, crate root first. */
+  segments: string[];
+  parent: ModuleNode | undefined;
+  depth: number;
+  pages: PageEntry[];
+  submodules: ModuleNode[];
+  reexports: ReexportEntry[];
+  /** The `use` item this module was inlined through, if any. */
+  via: Item | undefined;
+  /** cfg predicates the module is gated on, ancestors' gates included. */
+  gates: Cfg[];
+  /** Lower-cased names claimed in this directory. */
+  taken: Set<string>;
+}
+
+/** First line of a docstring, or "" when there is none. */
+function firstLine(docs: string | null | undefined): string {
+  return docs?.split("\n")[0]?.trim() ?? "";
+}
+
+/**
+ * Wrap text in a Markdown code span, using a longer backtick fence when the
+ * text itself contains backticks (CommonMark §6.1).
+ */
+export function inlineCode(text: string): string {
+  const longest = Math.max(0, ...(text.match(/`+/g) ?? []).map((run) => run.length));
+  const fence = "`".repeat(longest + 1);
+  const pad = text.startsWith("`") || text.endsWith("`") ? " " : "";
+  return `${fence}${pad}${text}${pad}${fence}`;
+}
+
+/**
+ * Attributes that are part of an item's API, as Rust source lines for the
+ * top of its signature block: `#[non_exhaustive]`, `#[must_use]` (with
+ * its reason) and `#[repr(..)]`. Handles the string attributes of older
+ * format versions and the structured ones of format 56+.
+ */
+export function attrLines(item: Pick<Item, "attrs">): string[] {
+  const lines: string[] = [];
+  const known = /^#\[(non_exhaustive|must_use|repr)\b/;
+  for (const attr of item.attrs) {
+    if (typeof attr === "string") {
+      const text = attr.startsWith("#[") ? attr : `#[${attr}]`;
+      if (known.test(text)) lines.push(text);
+      continue;
+    }
+    if ("must_use" in attr) {
+      const reason = (attr.must_use as { reason?: string | null } | null)?.reason;
+      lines.push(reason ? `#[must_use = ${JSON.stringify(reason)}]` : "#[must_use]");
+    } else if ("repr" in attr) {
+      const r = attr.repr as {
+        kind?: string;
+        align?: number | null;
+        packed?: number | null;
+        int?: string | null;
+      };
+      const parts: string[] = [];
+      if (r.kind && r.kind !== "rust") parts.push(r.kind === "c" ? "C" : r.kind);
+      if (r.int) parts.push(r.int);
+      if (r.align != null) parts.push(`align(${r.align})`);
+      if (r.packed != null) parts.push(r.packed === 1 ? "packed" : `packed(${r.packed})`);
+      if (parts.length > 0) lines.push(`#[repr(${parts.join(", ")})]`);
+    } else if ("other" in attr && typeof attr.other === "string" && known.test(attr.other)) {
+      lines.push(attr.other);
+    }
+  }
+  return lines;
+}
+
+/** URL-encode one path segment of a generated page. */
+function encodeSegment(segment: string): string {
+  return encodeURIComponent(segment);
+}
+
+/** Join a base URL and path segments into an absolute URL path. */
+function joinUrl(base: string, segments: string[]): string {
+  const trimmed = base.replace(/\/+$/, "");
+  return `${trimmed}/${segments.join("/")}`;
+}
+
+/** The slug github-slugger (used by Fumadocs) gives a `` ## `name` `` heading. */
+function headingSlug(name: string): string {
+  return name
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s_-]/gu, "")
+    .replace(/\s/g, "-");
+}
+
+/** Short suffix used to disambiguate colliding file names. */
+function kindSuffix(kind: ItemKind): string {
+  const map: Partial<Record<ItemKind, string>> = {
+    function: "fn",
+    macro: "macro",
+    proc_derive: "derive",
+    proc_attribute: "attr",
+    module: "mod",
+    type_alias: "type",
+    constant: "const",
+  };
+  return map[kind] ?? kind;
+}
+
+/** How an item is named in index listings (`name!` for macros). */
+function displayName(name: string, kind: ItemKind): string {
+  return kind === "macro" ? `${name}!` : name;
+}
+
+/** True when the item carries `#[doc(<flag>)]` (e.g. `inline`, `no_inline`). */
+function hasDocFlag(item: Item, flag: string): boolean {
+  const re = new RegExp(`#\\[doc\\(\\s*${flag}\\s*\\)\\]`);
+  return item.attrs.some((attr) => {
+    const text = typeof attr === "string" ? attr : "other" in attr ? String(attr.other) : "";
+    return re.test(text);
+  });
+}
+
+/** rustdoc HTML file prefixes (`struct.Foo.html`) by item kind. */
+const HTML_KIND_PREFIX: Partial<Record<string, string>> = {
+  struct: "struct",
+  enum: "enum",
+  union: "union",
+  trait: "trait",
+  trait_alias: "traitalias",
+  function: "fn",
+  type_alias: "type",
+  constant: "constant",
+  static: "static",
+  macro: "macro",
+  primitive: "primitive",
+  keyword: "keyword",
+  proc_attribute: "attr",
+  proc_derive: "derive",
+  foreign_type: "foreigntype",
+};
+
+/**
+ * URL of an external item's rustdoc HTML page, built from its defining path
+ * and its crate's `html_root_url` (docs.rs when the crate has none).
+ */
+export function externalDocUrl(
+  summary: ItemSummary,
+  ext: ExternalCrate | undefined
+): string | null {
+  const segs = summary.path;
+  if (segs.length === 0) return null;
+  const crateName = ext?.name ?? segs[0];
+  let root = ext?.html_root_url ?? `https://docs.rs/${crateName}/latest/`;
+  if (!root.endsWith("/")) root += "/";
+  const name = segs[segs.length - 1];
+  const dirs = segs.slice(0, -1);
+  if (summary.kind === "module") return `${root}${segs.join("/")}/index.html`;
+  if (summary.kind === "variant" && dirs.length > 1) {
+    const enumName = dirs[dirs.length - 1];
+    return `${root}${dirs.slice(0, -1).join("/")}/enum.${enumName}.html#variant.${name}`;
+  }
+  const prefix = HTML_KIND_PREFIX[summary.kind];
+  if (!prefix) return `${root}${dirs.join("/")}/index.html`;
+  return `${root}${dirs.join("/")}/${prefix}.${name}.html`;
+}
 
 /** Maximum filename length for most filesystems */
 const MAX_FILENAME_LENGTH = 255;
@@ -126,10 +335,13 @@ import {
   formatEnumSignature,
   formatTraitSignature,
   formatGenerics,
+  formatGenericBound,
+  formatGenericArgs,
   renderTabs,
   renderCards,
   renderSafetyCallout,
-  renderFeatureGateCallout,
+  renderCfgCallout,
+  renderDeprecation,
   renderPanicsCallout,
   renderErrorsCallout,
   type CardData,
@@ -150,22 +362,33 @@ function sanitizeLogMessage(message: string): string {
 }
 
 /**
- * Code-fence langs emitted by rustdoc that Shiki cannot resolve. These are
- * all Rust — the `compile_fail` / `ignore` / `no_run` / `should_panic` /
- * `edition20XX` tokens are doctest directives, not languages. Rewrite them
- * to `rust` and preserve the directive as the block title so it stays
- * visible to the reader.
+ * Doctest directives rustdoc accepts in a code fence's info string. A fence
+ * whose info string has only these (or nothing at all) is Rust: it is
+ * tagged `rust` so Shiki highlights it, keeps its first directive as the
+ * block title, and loses rustdoc's hidden `# ` lines.
  */
-const RUSTDOC_DOCTEST_DIRECTIVES = new Set([
-  "compile_fail",
-  "ignore",
-  "no_run",
-  "should_panic",
-  "edition2015",
-  "edition2018",
-  "edition2021",
-  "edition2024",
-]);
+const RUSTDOC_FENCE_TOKEN =
+  /^(rust|compile_fail|ignore|no_run|should_panic|test_harness|standalone_crate|allow_fail|edition20\d\d|ignore-[\w-]+|E\d{4}|\{[^}]*\})$/;
+
+/**
+ * Classify a code fence info string (the text after the backticks): Rust
+ * (per rustdoc's rules, including an empty info string) or another
+ * language.
+ */
+function classifyFenceInfo(info: string): { rust: boolean; title: string; extra: string } {
+  const tokens = info
+    .trim()
+    .split(/[\s,]+/)
+    .filter(Boolean);
+  if (tokens.every((t) => RUSTDOC_FENCE_TOKEN.test(t))) {
+    const directive = tokens.find((t) => t !== "rust" && !t.startsWith("{"));
+    return { rust: true, title: directive ?? "", extra: "" };
+  }
+  return { rust: false, title: "", extra: "" };
+}
+
+/** Crates whose docstrings were already normalized (normalization is not idempotent for `##`). */
+const NORMALIZED = new WeakSet<object>();
 
 /**
  * A conservative set of HTML tags that MDX parses safely inline. Everything
@@ -199,10 +422,12 @@ const SAFE_INLINE_HTML_TAGS = new Set([
  *   1. Code-fence aware: outside fenced ```...```, escape patterns MDX
  *      would mistake for JSX (URL autolinks `<https://…>`, Rust generic
  *      placeholders `<T>` / `<K, V>`, metasyntactic `<word>`).
- *   2. Code-fence language normalization: rewrite rustdoc's doctest
- *      directives (`compile_fail`, `ignore`, `no_run`, `should_panic`,
- *      `editionYYYY`) to `rust` with a `title="directive"` preserved so
- *      the doctest intent stays legible.
+ *   2. Code-fence normalization: a fence rustdoc treats as Rust (no info
+ *      string, `rust`, or only doctest directives such as `compile_fail`,
+ *      `ignore`, `no_run`, `should_panic`, `editionYYYY`, possibly
+ *      comma-separated) becomes ```rust, keeping the first directive as
+ *      `title="directive"`; hidden doctest lines (`# use foo;`) are
+ *      dropped and `##` unescapes to `#`.
  *
  * This was ported from a downstream fluxid-docs sync pipeline to the tool
  * itself — every consumer benefits without re-implementing the filters.
@@ -210,30 +435,39 @@ const SAFE_INLINE_HTML_TAGS = new Set([
 export function sanitizeDocstring(raw: string): string {
   if (!raw) return raw;
   const out: string[] = [];
-  let inFence = false;
+  let fence: { marker: string; rust: boolean } | null = null;
   for (const rawLine of raw.split("\n")) {
-    const fenceMatch = /^(\s*```)(\S+)?(.*)$/.exec(rawLine);
-    if (fenceMatch) {
-      // Entering or leaving a fence. Normalize langs on the opening fence.
-      if (!inFence && fenceMatch[2] && RUSTDOC_DOCTEST_DIRECTIVES.has(fenceMatch[2])) {
-        // Rewrite doctest directive → rust lang + title.
-        // Strip any `,ignore`/`,compile_fail`/etc. secondary tokens that
-        // rustdoc sometimes appends in the `rest` segment.
-        let rest = fenceMatch[3] ?? "";
-        rest = rest
-          .replace(/^[\s,]+/, "")
-          .replace(
-            /(^|[,\s])(compile_fail|ignore|no_run|should_panic|edition20(15|18|21|24))(\b)/g,
-            "$1"
-          );
-        out.push(`${fenceMatch[1]}rust title="${fenceMatch[2]}"${rest ? ` ${rest}` : ""}`);
-      } else {
-        out.push(rawLine);
-      }
-      inFence = !inFence;
+    const fenceMatch = /^(\s*)(`{3,}|~{3,})(.*)$/.exec(rawLine);
+    if (fence === null && fenceMatch) {
+      // Opening fence: classify the info string the way rustdoc does.
+      const [, indent, marker, info] = fenceMatch;
+      const { rust, title, extra } = classifyFenceInfo(info);
+      fence = { marker, rust };
+      out.push(
+        rust ? `${indent}${marker}rust${title ? ` title="${title}"` : ""}${extra}` : rawLine
+      );
       continue;
     }
-    if (inFence) {
+    if (fence !== null) {
+      const closing =
+        fenceMatch?.[2].startsWith(fence.marker[0]) === true &&
+        fenceMatch[2].length >= fence.marker.length &&
+        fenceMatch[3].trim() === "";
+      if (closing) {
+        fence = null;
+        out.push(rawLine);
+        continue;
+      }
+      if (fence.rust) {
+        // Doctest lines starting with `# ` (or a lone `#`) are hidden by
+        // rustdoc; `##` escapes a line that really starts with `#`.
+        const hidden = /^(\s*)#(.*)$/.exec(rawLine);
+        if (hidden && (hidden[2] === "" || /^\s/.test(hidden[2]))) continue;
+        if (hidden?.[2].startsWith("#")) {
+          out.push(hidden[1] + hidden[2]);
+          continue;
+        }
+      }
       out.push(rawLine);
       continue;
     }
@@ -358,7 +592,42 @@ export interface GeneratorOptions {
    * Default: true
    */
   useCards?: boolean;
+  /**
+   * Pages of other crates, keyed by an item's defining path
+   * (`crate::module::Item`, as in the rustdoc `paths` table). Workspace mode
+   * passes the union of every member's {@link RustdocGenerator.pageIndex}
+   * so cross-crate links and re-exports stay on the site instead of
+   * pointing at docs.rs.
+   */
+  externalPages?: Map<string, string>;
+  /**
+   * Base URL of the source repository (e.g.
+   * `https://github.com/org/repo`). Enables "Source" links built from item
+   * spans, and resolves repository-relative links in docstrings
+   * (`../../docs/spec.md`) against the item's source file. Without it such
+   * links are rendered as plain text, since they would 404 on the site.
+   */
+  sourceUrlBase?: string;
+  /**
+   * Git ref (branch, tag or commit) for source links. With a ref, links are
+   * `<sourceUrlBase>/blob/<ref>/<file>`; without one, `<sourceUrlBase>/<file>`
+   * (so a base that already ends in `/blob/<ref>` works too).
+   */
+  sourceRef?: string;
+  /**
+   * Package name used in the `Cargo.toml` snippet of feature-gate callouts
+   * (defaults to the crate name). Workspace mode passes the member's
+   * `package.name`.
+   */
+  packageName?: string;
 }
+
+/** Options that stay optional after defaults have been applied. */
+type OptionalKeys = "externalPages" | "sourceUrlBase" | "sourceRef" | "packageName";
+
+/** Options after defaults have been applied. */
+type ResolvedOptions = Required<Omit<GeneratorOptions, OptionalKeys>> &
+  Pick<GeneratorOptions, OptionalKeys>;
 
 /**
  * Represents a generated file with its path and content.
@@ -375,9 +644,19 @@ export interface GeneratedFile {
  */
 export class RustdocGenerator {
   private crate: RustdocCrate;
-  private options: Required<GeneratorOptions>;
+  private options: ResolvedOptions;
   private warningCount = 0;
   private missingRefCount = 0;
+  /** Resolved public-API plan; built once, lazily. */
+  private plan: ModuleNode | undefined;
+  /** Item id → canonical absolute URL (pages and modules). */
+  private itemUrls = new Map<string, string>();
+  /** Member id (method, variant, field, …) → URL with anchor. */
+  private memberUrls = new Map<string, string>();
+  /** Processed docstrings by `id:demote`. */
+  private docsCache = new Map<string, string>();
+  /** Member heading ids by owning item id. */
+  private anchorCache = new Map<string, Map<string, string>>();
 
   constructor(crate: RustdocCrate, options: GeneratorOptions) {
     this.crate = crate;
@@ -389,7 +668,7 @@ export class RustdocGenerator {
       useTabs: true,
       useCards: true,
       ...options,
-    } as Required<GeneratorOptions>;
+    } as ResolvedOptions;
     // MDX-safeguard every docstring once at ingest time so downstream
     // render sites do not re-implement escape / code-fence-lang filters.
     this.normalizeDocstrings();
@@ -403,6 +682,8 @@ export class RustdocGenerator {
    * (`compile_fail`, `ignore`, …) that Shiki cannot resolve.
    */
   private normalizeDocstrings(): void {
+    if (NORMALIZED.has(this.crate)) return;
+    NORMALIZED.add(this.crate);
     const items = this.crate.index as Record<string, unknown>;
     for (const key of Object.keys(items)) {
       const item = items[key] as { docs?: unknown; inner?: Record<string, unknown> } | undefined;
@@ -493,10 +774,122 @@ export class RustdocGenerator {
   /**
    * Generate all MDX files from the rustdoc JSON.
    *
+   * Runs in two phases: {@link buildPlan} resolves which items are part of
+   * the public API and where each one lives (following `pub use`
+   * re-exports), then every module node of that plan is rendered.
+   *
    * @throws RustdocError if root item is missing or not a module
    */
   generate(): GeneratedFile[] {
+    const plan = this.buildPlan();
     const files: GeneratedFile[] = [];
+    this.renderNode(plan, files);
+    if (this.missingRefCount > RustdocGenerator.MAX_VERBOSE_MISSING_REFS) {
+      console.warn(
+        `Total missing item references: ${this.missingRefCount} (only first ${RustdocGenerator.MAX_VERBOSE_MISSING_REFS} shown)`
+      );
+    }
+    return files;
+  }
+
+  /**
+   * Map from an item's defining path (`crate::module::Item`, as found in the
+   * rustdoc `paths` table) to the absolute URL of its generated page.
+   *
+   * Workspace mode feeds the union of every member's index to each member
+   * through {@link GeneratorOptions.externalPages}, so a re-export of a
+   * sibling crate's item links to the sibling's page instead of docs.rs.
+   */
+  pageIndex(): Map<string, string> {
+    const plan = this.buildPlan();
+    const index = new Map<string, string>();
+    const visit = (node: ModuleNode): void => {
+      const modPath = this.getPath(node.item.id);
+      if (modPath && node.item.crate_id === 0) {
+        const key = modPath.join("::");
+        if (!index.has(key)) index.set(key, this.nodeUrl(node));
+      }
+      for (const page of node.pages) {
+        const p = this.getPath(page.item.id);
+        if (!p || page.item.crate_id !== 0) continue;
+        const key = p.join("::");
+        if (!index.has(key)) index.set(key, page.url);
+      }
+      node.submodules.forEach(visit);
+    };
+    visit(plan);
+    return index;
+  }
+
+  /**
+   * Provide the page index of sibling crates (see {@link pageIndex}). Call
+   * before {@link generate}; workspace mode builds every member's index
+   * first, then renders each member with the union.
+   */
+  setExternalPages(pages: Map<string, string>): void {
+    this.options.externalPages = pages;
+    // Docstrings processed so far resolved their links without these pages.
+    this.docsCache.clear();
+  }
+
+  /**
+   * URL of a file in the source repository, or undefined when no
+   * `sourceUrlBase` is configured or the path is outside the repository.
+   */
+  private sourceUrl(file: string, lines?: [number, number]): string | undefined {
+    if (!this.options.sourceUrlBase) return undefined;
+    if (file.startsWith("/") || /^[A-Za-z]:[\\/]/.test(file) || file.startsWith(".."))
+      return undefined;
+    const base = this.options.sourceUrlBase.replace(/\/+$/, "");
+    const path = file.split("\\").join("/").replace(/^\.\//, "");
+    const prefix = this.options.sourceRef ? `${base}/blob/${this.options.sourceRef}` : base;
+    const anchor = lines ? `#L${lines[0]}${lines[1] !== lines[0] ? `-L${lines[1]}` : ""}` : "";
+    return `${prefix}/${path}${anchor}`;
+  }
+
+  /**
+   * Resolve a relative link in a docstring (`../../docs/spec.md`) against
+   * the directory of the item's source file. Returns the repository URL when
+   * a source base is configured, null otherwise (such links 404 on a docs
+   * site), and undefined for links that are not repository-relative.
+   */
+  private resolveRelativeDocLink(item: Item, dest: string): string | null | undefined {
+    if (
+      !dest ||
+      /^[a-z][a-z0-9+.-]*:/i.test(dest) ||
+      dest.startsWith("/") ||
+      dest.startsWith("#")
+    ) {
+      return undefined;
+    }
+    if (!/^\.{1,2}\/|\.(md|rs|toml|json|txt|ya?ml|html?)(#.*)?$|\/$/.test(dest)) return undefined;
+    const span = item.span;
+    if (!span || span.filename.startsWith("/") || dest.endsWith(".html")) return null;
+    const [pathPart, anchor] = dest.split("#", 2);
+    const dir = span.filename.split("\\").join("/").split("/").slice(0, -1).join("/");
+    const resolved = posix.normalize(posix.join(dir, pathPart));
+    const url = this.sourceUrl(resolved);
+    if (!url) return null;
+    return anchor ? `${url}#${anchor}` : url;
+  }
+
+  /**
+   * Resolve the public API surface into a tree of {@link ModuleNode}s.
+   *
+   * Phase A places every item that is *directly* reachable: public items of
+   * public modules, recursively from the crate root. Those locations are
+   * canonical. Phase B then walks the `pub use` items in breadth-first order:
+   *
+   * - a re-export of an item that already has a page (and no
+   *   `#[doc(inline)]`) becomes a "Re-exports" entry linking to that page;
+   * - a re-export of an item from a private module (or a `#[doc(inline)]`
+   *   re-export) gets its page at the re-export path, under `use.name`;
+   * - a re-exported private module is inlined as a submodule;
+   * - a glob re-export applies the same rules to each public child;
+   * - an external re-export becomes an entry linking to its documentation.
+   */
+  private buildPlan(): ModuleNode {
+    if (this.plan) return this.plan;
     const rootItem = this.getItem(this.crate.root);
 
     if (!rootItem) {
@@ -525,220 +918,558 @@ export class RustdocGenerator {
       });
     }
 
-    // Process the root module recursively with visited set for circular reference detection
-    const visited = new Set<string>();
-    this.processModule(rootItem, [], files, 0, visited);
+    const rootName = rootItem.name ?? "crate";
+    const root = this.newNode(rootItem, rootName, [sanitizePath(rootName)], undefined, undefined);
+    this.registerModuleUrl(root);
 
-    return files;
+    const pendingUses: { node: ModuleNode; use: Item }[] = [];
+    this.placeDirectTree(root, pendingUses);
+    // The queue grows while it is walked (inlined modules and glob targets
+    // add their own re-exports); an array iterator sees appended entries.
+    for (const { node, use } of pendingUses) {
+      this.placeUse(node, use, pendingUses);
+    }
+
+    this.plan = root;
+    this.buildMemberUrls(root);
+    return root;
+  }
+
+  /** Create a module node (not yet attached to a parent). */
+  private newNode(
+    item: Item,
+    name: string,
+    segments: string[],
+    parent: ModuleNode | undefined,
+    via: Item | undefined
+  ): ModuleNode {
+    const gates = [...(parent?.gates ?? [])];
+    if (via) gates.push(...itemCfgs(via));
+    gates.push(...itemCfgs(item));
+    return {
+      item,
+      name,
+      segments,
+      parent,
+      depth: parent ? parent.depth + 1 : 0,
+      pages: [],
+      submodules: [],
+      reexports: [],
+      via,
+      gates: dedupeCfgs(gates),
+      taken: new Set(["index", "meta"]),
+    };
+  }
+
+  /** Record the canonical URL of a module node's item, if it has none yet. */
+  private registerModuleUrl(node: ModuleNode): void {
+    const key = String(node.item.id);
+    if (!this.itemUrls.has(key)) this.itemUrls.set(key, this.nodeUrl(node));
   }
 
   /**
-   * Recursively processes a module and its children, generating MDX files.
-   *
-   * This method performs a depth-first traversal of the module hierarchy:
-   * 1. Validates recursion depth to prevent stack overflow
-   * 2. Detects circular module references via visited set
-   * 3. Collects and categorizes child items by kind (struct, enum, function, etc.)
-   * 4. Recursively processes submodules (incrementing depth)
-   * 5. Generates index page for the module (if enabled)
-   * 6. Generates meta.json for FumaDocs navigation
-   * 7. Generates individual item pages based on groupBy mode
-   *
-   * Items are filtered using the configured filter function, and implementations
-   * (impls) are skipped here since they're rendered with their associated types.
-   *
-   * @param item - The module item to process (must have 'module' in inner)
-   * @param parentPath - Array of ancestor module names forming the path
-   * @param files - Accumulator array for generated files (mutated)
-   * @param depth - Current recursion depth for overflow protection (default: 0)
-   * @param visited - Set of visited module IDs for circular reference detection
-   *
-   * @remarks
-   * - Module names are sanitized via `sanitizePath()` to prevent directory traversal
-   * - Unknown item kinds are skipped with a warning for forward compatibility
-   * - Missing item references are tracked and summarized at the end
-   * - Circular module references are detected and warned about
+   * Phase A for one module subtree: place every directly reachable child and
+   * queue its `pub use` items for phase B.
    */
-  private processModule(
+  private placeDirectTree(start: ModuleNode, pending: { node: ModuleNode; use: Item }[]): void {
+    const queue: ModuleNode[] = [start];
+    while (queue.length > 0) {
+      const node = queue.shift()!;
+      if (!("module" in node.item.inner)) continue;
+      for (const childId of node.item.inner.module.items) {
+        const child = this.getItem(childId);
+        if (!child) {
+          this.warnMissingRef(childId, node.name);
+          continue;
+        }
+        const kind = getItemKind(child.inner);
+        if (kind === "use") {
+          if (this.options.filter(child)) pending.push({ node, use: child });
+          continue;
+        }
+        if (!this.options.filter(child)) continue;
+        if (kind === "unknown") {
+          this.warn(`Skipping unknown item kind in ${child.name ?? String(childId)}`);
+          continue;
+        }
+        if (kind === "module") {
+          if (!child.name) continue;
+          const sub = this.addSubmodule(node, child, child.name, undefined);
+          if (sub) queue.push(sub);
+          continue;
+        }
+        if (!child.name) continue;
+        this.addPage(node, child, child.name, undefined);
+      }
+    }
+  }
+
+  /**
+   * Attach a submodule to `parent`, guarding against cycles and runaway
+   * nesting. Returns undefined when the module was refused.
+   */
+  private addSubmodule(
+    parent: ModuleNode,
     item: Item,
-    parentPath: string[],
-    files: GeneratedFile[],
-    depth = 0,
-    visited = new Set<string>()
-  ): void {
-    // Prevent stack overflow from deeply nested or circular module hierarchies
-    if (depth > MAX_RECURSION_DEPTH) {
+    name: string,
+    via: Item | undefined
+  ): ModuleNode | undefined {
+    if (parent.depth + 1 > MAX_RECURSION_DEPTH) {
       this.warn(
-        `Maximum module nesting depth (${MAX_RECURSION_DEPTH}) exceeded at ${item.name ?? "unknown"}. ` +
+        `Maximum module nesting depth (${MAX_RECURSION_DEPTH}) exceeded at ${name}. ` +
           `Skipping further nested modules.`
       );
+      return undefined;
+    }
+    for (let n: ModuleNode | undefined = parent; n; n = n.parent) {
+      if (String(n.item.id) === String(item.id)) {
+        this.warn(`Circular module reference detected: ${name}. Skipping.`);
+        return undefined;
+      }
+    }
+    const dir = this.claimName(parent, sanitizePath(name), "module");
+    const node = this.newNode(item, name, [...parent.segments, dir], parent, via);
+    parent.submodules.push(node);
+    this.registerModuleUrl(node);
+    return node;
+  }
+
+  /** Place a page for `item` in `node` under `name` (the re-export name, if any). */
+  private addPage(node: ModuleNode, item: Item, name: string, via: Item | undefined): void {
+    const kind = getItemKind(item.inner);
+    if (kind === "unknown") {
+      this.warn(`Skipping unknown item kind in ${name}`);
       return;
     }
+    if (!PAGE_KINDS.has(kind)) return;
+    const file = this.claimName(node, sanitizePath(name), kind);
+    const url =
+      this.options.groupBy === "kind"
+        ? `${this.nodeUrl(node)}/${kindToFilename(kind)}#${headingSlug(name)}`
+        : `${this.nodeUrl(node)}/${encodeSegment(file)}`;
+    const gates = [...node.gates];
+    if (via) gates.push(...itemCfgs(via));
+    gates.push(...itemCfgs(item));
+    const entry: PageEntry = { item, name, file, kind, node, via, url, gates: dedupeCfgs(gates) };
+    node.pages.push(entry);
+    const key = String(item.id);
+    if (!this.itemUrls.has(key)) this.itemUrls.set(key, url);
+  }
 
-    // Detect circular module references
-    const itemKey = String(item.id);
-    if (visited.has(itemKey)) {
-      this.warn(`Circular module reference detected: ${item.name ?? itemKey}. Skipping.`);
-      return;
+  /**
+   * Reserve a file / directory name inside a module directory. Names are
+   * compared case-insensitively (macOS and Windows filesystems are), and a
+   * page may not share its name with a submodule (`foo.mdx` and
+   * `foo/index.mdx` resolve to the same URL). Collisions get a kind suffix.
+   */
+  private claimName(node: ModuleNode, base: string, kind: ItemKind): string {
+    let candidate = base;
+    if (node.taken.has(candidate.toLowerCase())) {
+      candidate = `${base}-${kindSuffix(kind)}`;
+      let n = 2;
+      while (node.taken.has(candidate.toLowerCase())) {
+        candidate = `${base}-${kindSuffix(kind)}-${n++}`;
+      }
     }
-    visited.add(itemKey);
+    node.taken.add(candidate.toLowerCase());
+    return candidate;
+  }
 
-    // Check for module type with proper warning for unexpected items
-    if (!("module" in item.inner)) {
-      // Only warn if this appears to be a genuine module item (has docs or non-empty name)
-      // This handles format differences and edge cases gracefully
-      const itemName = item.name ?? `id:${String(item.id)}`;
-      if (item.docs || (item.name && item.name.length > 0)) {
-        this.warn(
-          `Expected module type for "${itemName}" but found: ${Object.keys(item.inner).join(", ")}`
-        );
+  /** Phase B: resolve one `pub use` item found in `node`. */
+  private placeUse(node: ModuleNode, use: Item, pending: { node: ModuleNode; use: Item }[]): void {
+    if (!("use" in use.inner)) return;
+    const u = use.inner.use;
+    const inline = hasDocFlag(use, "inline");
+    const noInline = hasDocFlag(use, "no_inline");
+    const target = u.id !== undefined && u.id !== null ? this.getItem(u.id) : undefined;
+    const name = u.name ?? u.source.split("::").pop() ?? u.source;
+
+    if (u.is_glob) {
+      if (target && "module" in target.inner && target.crate_id === 0) {
+        for (const childId of target.inner.module.items) {
+          const child = this.getItem(childId);
+          if (!child) continue;
+          const kind = getItemKind(child.inner);
+          if (kind === "use") {
+            if (this.options.filter(child)) pending.push({ node, use: child });
+            continue;
+          }
+          if (!child.name || !this.options.filter(child)) continue;
+          this.placeTarget(node, child, child.name, use, inline, noInline, pending);
+        }
+        return;
       }
-      return;
-    }
-
-    const module = item.inner.module;
-    // Sanitize module name to prevent path traversal
-    const sanitizedName = item.name ? sanitizePath(item.name) : null;
-    const modulePath = sanitizedName ? [...parentPath, sanitizedName] : parentPath;
-    const dirPath = modulePath.length > 0 ? modulePath.join("/") : "";
-
-    // Collect items by kind for this module
-    const itemsByKind = new Map<ItemKind, Item[]>();
-
-    for (const childId of module.items) {
-      const childItem = this.getItem(childId);
-      if (!childItem) {
-        // Track missing references instead of silently skipping
-        this.warnMissingRef(childId, item.name);
-        continue;
-      }
-      if (!this.options.filter(childItem)) continue;
-
-      const kind = getItemKind(childItem.inner);
-
-      // Skip unknown item kinds (forward compatibility)
-      if (kind === "unknown") {
-        this.warn(`Skipping unknown item kind in ${childItem.name ?? childId}`);
-        continue;
-      }
-
-      // Recursively process submodules with incremented depth
-      if (kind === "module") {
-        this.processModule(childItem, modulePath, files, depth + 1, visited);
-        continue;
-      }
-
-      // Skip impls - they'll be rendered with their types
-      if (kind === "impl") continue;
-
-      if (!itemsByKind.has(kind)) {
-        itemsByKind.set(kind, []);
-      }
-      itemsByKind.get(kind)!.push(childItem);
-    }
-
-    // Generate index page for this module
-    if (this.options.generateIndex && modulePath.length > 0) {
-      const indexContent = this.generateModuleIndex(item, modulePath, itemsByKind);
-      files.push({
-        path: `${dirPath}/index.mdx`,
-        content: indexContent,
+      node.reexports.push({
+        name: `${u.source}::*`,
+        source: u.source,
+        isGlob: true,
+        href: null,
+        targetId: u.id ?? undefined,
       });
+      return;
     }
 
-    // Generate meta.json for Fumadocs navigation
-    // Only generate at root if this is the root module
-    const isRootModule = parentPath.length === 0 && !item.name;
-    const metaContent = this.generateMeta(item, itemsByKind);
-    files.push({
-      path: dirPath ? `${dirPath}/meta.json` : "meta.json",
-      content: metaContent,
-    });
+    if (target?.crate_id !== 0) {
+      node.reexports.push({
+        name,
+        source: u.source,
+        isGlob: false,
+        href: null,
+        targetId: u.id ?? undefined,
+      });
+      return;
+    }
+    this.placeTarget(node, target, name, use, inline, noInline, pending);
+  }
 
-    // Generate individual item pages based on groupBy
-    if (this.options.groupBy === "kind") {
-      // Group by kind: functions.mdx, structs.mdx, etc.
-      for (const [kind, items] of itemsByKind) {
-        if (items.length === 0) continue;
-        const content = this.generateKindPage(kind, items, modulePath);
-        // Fix: For root module (empty dirPath), still need valid path
-        const filename = kindToFilename(kind);
-        files.push({
-          path: dirPath ? `${dirPath}/${filename}.mdx` : `${filename}.mdx`,
-          content,
-        });
+  /** Inline `target` into `node` or record a re-export entry pointing at it. */
+  private placeTarget(
+    node: ModuleNode,
+    target: Item,
+    name: string,
+    use: Item,
+    inline: boolean,
+    noInline: boolean,
+    pending: { node: ModuleNode; use: Item }[]
+  ): void {
+    const kind = getItemKind(target.inner);
+    const existing = this.itemUrls.get(String(target.id));
+    const source = "use" in use.inner ? use.inner.use.source : name;
+    if (existing !== undefined && (!inline || noInline)) {
+      node.reexports.push({
+        name,
+        source,
+        isGlob: false,
+        href: existing,
+        target,
+        kind,
+      });
+      return;
+    }
+    if (kind === "module") {
+      const sub = this.addSubmodule(node, target, name, use);
+      if (sub) this.placeDirectTree(sub, pending);
+      return;
+    }
+    if (kind === "impl" || kind === "use") return;
+    this.addPage(node, target, name, use);
+  }
+
+  /**
+   * Absolute URL for any item id: the canonical page of a local item, a
+   * sibling workspace crate's page ({@link GeneratorOptions.externalPages}),
+   * or the item's rustdoc HTML page for other crates (`html_root_url`, else
+   * docs.rs). Null when the item has no public documentation.
+   */
+  private resolveIdUrl(id: Id): string | null {
+    const key = String(id);
+    const local = this.itemUrls.get(key) ?? this.memberUrls.get(key);
+    if (local) return local;
+    const summary = this.crate.paths[key] as ItemSummary | undefined;
+    if (!summary || summary.crate_id === 0) return null;
+    const sibling = this.options.externalPages?.get(summary.path.join("::"));
+    if (sibling) return sibling;
+    return externalDocUrl(summary, this.crate.external_crates[String(summary.crate_id)]);
+  }
+
+  /**
+   * A docstring ready for MDX: intra-doc links resolved through
+   * `item.links`, headings pushed down `demote` levels so they nest under
+   * the page heading that introduces the item.
+   */
+  private docsFor(item: Item, demote: number, strip: readonly string[] = []): string {
+    if (!item.docs) return "";
+    const cacheKey = `${String(item.id)}:${demote}:${strip.join(",")}`;
+    const cached = this.docsCache.get(cacheKey);
+    if (cached !== undefined) return cached;
+    const links = item.links;
+    const resolved = rewriteDocLinks(item.docs, (key) => {
+      const raw = key.replace(/&lt;/g, "<").replace(/&gt;/g, ">");
+      const id = links[key] ?? links[raw];
+      if (id === undefined) return this.resolveRelativeDocLink(item, key);
+      return this.resolveIdUrl(id);
+    });
+    let body = resolved;
+    for (const name of strip) body = takeSection(body, name).rest;
+    const out = demoteHeadings(body, demote);
+    this.docsCache.set(cacheKey, out);
+    return out;
+  }
+
+  /**
+   * Docstring sections an item page shows as callouts (and therefore
+   * removes from the body): `# Panics` / `# Errors` for functions and
+   * `# Safety` for unsafe functions and traits.
+   */
+  private calloutSections(item: Item): string[] {
+    const out: string[] = [];
+    if ("function" in item.inner) out.push("Panics", "Errors");
+    if (this.isUnsafeItem(item)) out.push("Safety");
+    return out;
+  }
+
+  /** Append an item's docs (preceded by a blank line) when it has any. */
+  private pushDocs(
+    sections: string[],
+    item: Item,
+    demote: number,
+    strip: readonly string[] = []
+  ): void {
+    const docs = this.docsFor(item, demote, strip);
+    if (docs) {
+      sections.push("");
+      sections.push(docs);
+    }
+  }
+
+  /**
+   * One member (method, associated type or constant) of a trait or impl:
+   * anchored heading, deprecation, signature with its attributes, source
+   * link and docs.
+   */
+  private pushMember(sections: string[], member: Item, anchor: string | undefined): void {
+    sections.push(this.memberHeading(member.name ?? "", anchor));
+    sections.push("");
+    const deprecation = this.renderDeprecationOf(member);
+    if (deprecation) {
+      sections.push(deprecation);
+      sections.push("");
+    }
+    sections.push("```rust");
+    sections.push(...attrLines(member));
+    sections.push(this.formatMemberSignature(member));
+    sections.push("```");
+    this.pushSource(sections, member);
+    this.pushDocs(sections, member, 4);
+    sections.push("");
+  }
+
+  /** A deprecation callout (escaped title, MDX-safe note), or "". */
+  private renderDeprecationOf(item: Item): string {
+    if (!item.deprecation) return "";
+    const note = item.deprecation.note ? sanitizeDocstring(item.deprecation.note) : undefined;
+    return renderDeprecation(item.deprecation.since ?? undefined, note);
+  }
+
+  /** `[Source](...)` after a signature, when a source URL base is set. */
+  private pushSource(sections: string[], item: Item): void {
+    const span = item.span;
+    if (!span) return;
+    const url = this.sourceUrl(span.filename, [span.begin[0], span.end[0]]);
+    if (!url) return;
+    sections.push("");
+    sections.push(`[Source](${url})`);
+  }
+
+  /** `` #### `name` [#anchor] `` — a member heading with a stable id. */
+  private memberHeading(label: string, anchor: string | undefined): string {
+    return `#### ${inlineCode(label)}${anchor ? ` [#${anchor}]` : ""}`;
+  }
+
+  /**
+   * Stable heading ids for the members rendered on an item's page:
+   * `method.<name>` for methods (inherent ones, trait-impl ones that are
+   * rendered because they are documented, and trait items),
+   * `associatedtype.<name>` / `associatedconstant.<name>`, and
+   * `variant.<Name>` for enum variants. Struct and union fields map to the
+   * page's `fields` heading. Duplicates get a numeric suffix.
+   */
+  private anchorsFor(item: Item): Map<string, string> {
+    const key = String(item.id);
+    const cached = this.anchorCache.get(key);
+    if (cached) return cached;
+    const anchors = new Map<string, string>();
+    const used = new Set<string>();
+    const claim = (id: Id, base: string): void => {
+      if (anchors.has(String(id))) return;
+      let anchor = base;
+      for (let n = 2; used.has(anchor); n++) anchor = `${base}-${n}`;
+      used.add(anchor);
+      anchors.set(String(id), anchor);
+    };
+    const member = (child: Item): void => {
+      if (!child.name) return;
+      if ("function" in child.inner) claim(child.id, `method.${child.name}`);
+      else if ("assoc_type" in child.inner) claim(child.id, `associatedtype.${child.name}`);
+      else if ("assoc_const" in child.inner) claim(child.id, `associatedconstant.${child.name}`);
+    };
+
+    if ("enum" in item.inner) {
+      for (const vid of item.inner.enum.variants) {
+        const v = this.getItem(vid);
+        if (v?.name) claim(vid, `variant.${v.name}`);
       }
-    } else {
-      // One page per item
-      for (const [, items] of itemsByKind) {
-        for (const childItem of items) {
-          if (!childItem.name) continue;
-          // Sanitize item name for path safety
-          const safeName = sanitizePath(childItem.name);
-          const content = this.generateItemPage(childItem, modulePath);
-          files.push({
-            path: dirPath ? `${dirPath}/${safeName}.mdx` : `${safeName}.mdx`,
-            content,
-          });
+    }
+    if ("trait" in item.inner) {
+      for (const id of item.inner.trait.items) {
+        const child = this.getItem(id);
+        if (child) member(child);
+      }
+    }
+    for (const impl of this.getImplementations(item)) {
+      if (!("impl" in impl.inner)) continue;
+      const isTrait = Boolean(impl.inner.impl.trait);
+      for (const id of impl.inner.impl.items) {
+        const child = this.getItem(id);
+        if (!child) continue;
+        // Mirrors renderImpl: trait impls show documented methods only
+        // (their associated items go in an un-anchored code block); inherent
+        // impls show methods and associated constants.
+        if (isTrait && (!child.docs || !("function" in child.inner))) continue;
+        if (!isTrait && "assoc_type" in child.inner) continue;
+        member(child);
+      }
+    }
+    this.anchorCache.set(key, anchors);
+    return anchors;
+  }
+
+  /**
+   * URLs of members (methods, variants, fields, associated items) of every
+   * item that has a canonical page, so intra-doc links like
+   * `` [`Foo::bar`] `` or `` [`Self::Variant`] `` land on the right heading.
+   */
+  private buildMemberUrls(node: ModuleNode): void {
+    for (const page of node.pages) {
+      if (this.itemUrls.get(String(page.item.id)) !== page.url) continue; // not canonical
+      const inKindPage = this.options.groupBy === "kind";
+      for (const [id, anchor] of this.anchorsFor(page.item)) {
+        if (!this.memberUrls.has(id)) {
+          this.memberUrls.set(id, inKindPage ? page.url : `${page.url}#${anchor}`);
+        }
+      }
+      const inner = page.item.inner;
+      const fieldIds: Id[] = [];
+      if ("struct" in inner && isPlainStruct(inner.struct.kind)) {
+        fieldIds.push(...inner.struct.kind.plain.fields);
+      } else if ("union" in inner) {
+        fieldIds.push(...inner.union.fields);
+      }
+      for (const id of fieldIds) {
+        if (!this.memberUrls.has(String(id))) {
+          this.memberUrls.set(String(id), inKindPage ? page.url : `${page.url}#fields`);
+        }
+      }
+      if ("enum" in inner) {
+        for (const vid of inner.enum.variants) {
+          const variantUrl = this.memberUrls.get(String(vid));
+          const v = this.getItem(vid);
+          if (!variantUrl || !v || !("variant" in v.inner)) continue;
+          const vk = v.inner.variant.kind;
+          const ids = isTupleVariant(vk)
+            ? vk.tuple.filter((x): x is Id => x !== null)
+            : isStructVariant(vk)
+              ? vk.struct.fields
+              : [];
+          for (const fid of ids) {
+            if (!this.memberUrls.has(String(fid))) this.memberUrls.set(String(fid), variantUrl);
+          }
         }
       }
     }
+    node.submodules.forEach((sub) => this.buildMemberUrls(sub));
+  }
 
-    // Report summary of missing references at end of root module processing
-    if (isRootModule && this.missingRefCount > 5) {
-      console.warn(`Total missing item references: ${this.missingRefCount} (only first 5 shown)`);
+  /** Absolute URL of a module node's index page. */
+  private nodeUrl(node: ModuleNode): string {
+    return joinUrl(this.options.baseUrl, node.segments.map(encodeSegment));
+  }
+
+  /** Render one module node (index, meta.json, pages) and its submodules. */
+  private renderNode(node: ModuleNode, files: GeneratedFile[]): void {
+    const dirPath = node.segments.join("/");
+
+    if (this.options.generateIndex) {
+      files.push({ path: `${dirPath}/index.mdx`, content: this.generateModuleIndex(node) });
     }
+    files.push({ path: `${dirPath}/meta.json`, content: this.generateMeta(node) });
+
+    if (this.options.groupBy === "kind") {
+      for (const kind of KIND_ORDER) {
+        const pages = node.pages.filter((p) => p.kind === kind);
+        if (pages.length === 0) continue;
+        files.push({
+          path: `${dirPath}/${kindToFilename(kind)}.mdx`,
+          content: this.generateKindPage(kind, pages, node),
+        });
+      }
+    } else {
+      for (const page of node.pages) {
+        files.push({ path: `${dirPath}/${page.file}.mdx`, content: this.generateItemPage(page) });
+      }
+    }
+
+    for (const sub of node.submodules) this.renderNode(sub, files);
   }
 
   /**
-   * Generates the index.mdx page content for a module.
-   *
-   * The index page provides an overview of the module including:
-   * - YAML frontmatter with title, description, and icon
-   * - Module-level documentation (if present)
-   * - Table of contents organized by item kind (Structs, Enums, Functions, etc.)
-   *
-   * Items are sorted alphabetically within each kind section and linked
-   * appropriately based on the groupBy mode (linking to kind file or item file).
-   *
-   * @param item - The module item containing docs and metadata
-   * @param path - Module path segments for URL generation (e.g., ["crate", "module"])
-   * @param itemsByKind - Map of item kind to array of items in this module
-   * @returns Complete MDX content string for the module index page
+   * Generates the index.mdx page content for a module: frontmatter, module
+   * docs, a table of contents by item kind, submodules and re-exports. All
+   * links are absolute (`baseUrl` + canonical page path).
    */
-  private generateModuleIndex(
-    item: Item,
-    path: string[],
-    itemsByKind: Map<ItemKind, Item[]>
-  ): string {
-    const frontmatter = this.options.frontmatter(item, path);
+  private generateModuleIndex(node: ModuleNode): string {
+    const frontmatter = this.options.frontmatter(node.item, node.segments);
     const sections: string[] = [];
 
     sections.push(this.formatFrontmatter(frontmatter));
     sections.push("");
 
-    if (item.docs) {
-      sections.push(item.docs);
+    const gate = this.renderGate(node.gates);
+    if (gate) {
+      sections.push(gate);
       sections.push("");
     }
 
-    // Generate table of contents by kind
-    for (const kind of KIND_ORDER) {
-      const items = itemsByKind.get(kind);
-      if (!items || items.length === 0) continue;
+    const docs = this.docsFor(node.item, 1);
+    if (docs) {
+      sections.push(docs);
+      sections.push("");
+    }
 
+    const source: string[] = [];
+    this.pushSource(source, node.item);
+    if (source.length > 0) {
+      sections.push(...source.slice(1));
+      sections.push("");
+    }
+
+    if (node.submodules.length > 0) {
+      sections.push("## Modules");
+      sections.push("");
+      for (const sub of [...node.submodules].sort((a, b) => a.name.localeCompare(b.name))) {
+        sections.push(this.indexLine(sub.name, this.nodeUrl(sub), sub.item));
+      }
+      sections.push("");
+    }
+
+    for (const kind of KIND_ORDER) {
+      const pages = node.pages
+        .filter((p) => p.kind === kind)
+        .sort((a, b) => a.name.localeCompare(b.name));
+      if (pages.length === 0) continue;
       sections.push(`## ${kindToTitle(kind)}`);
       sections.push("");
+      for (const page of pages) {
+        sections.push(this.indexLine(displayName(page.name, kind), page.url, page.item));
+      }
+      sections.push("");
+    }
 
-      for (const childItem of items.sort((a, b) => (a.name ?? "").localeCompare(b.name ?? ""))) {
-        if (!childItem.name) continue;
-        const desc = childItem.docs?.split("\n")[0] ?? "";
-        // Fix: Link to kind file when groupBy is "kind", otherwise link to item file
-        const linkTarget =
-          this.options.groupBy === "kind"
-            ? `./${kindToFilename(kind)}#${childItem.name?.toLowerCase()}`
-            : `./${childItem.name}`;
-        sections.push(`- [\`${childItem.name}\`](${linkTarget}) - ${desc}`);
+    if (node.reexports.length > 0) {
+      sections.push("## Re-exports");
+      sections.push("");
+      for (const re of [...node.reexports].sort((a, b) => a.name.localeCompare(b.name))) {
+        const label = `\`${re.name}\``;
+        const href = re.href ?? (re.targetId !== undefined ? this.resolveIdUrl(re.targetId) : null);
+        const link = href ? `[${label}](${href})` : label;
+        const from =
+          re.isGlob || re.source.endsWith(`::${re.name}`) || re.source === re.name
+            ? ""
+            : ` (from \`${re.source}\`)`;
+        const glob = re.isGlob ? "" : from;
+        const summary = re.target ? firstLine(this.docsFor(re.target, 0)) : "";
+        const desc = summary ? ` - ${summary}` : "";
+        sections.push(`- ${link}${glob}${desc}`);
       }
       sections.push("");
     }
@@ -746,80 +1477,57 @@ export class RustdocGenerator {
     return sections.join("\n");
   }
 
+  /** One `- [`name`](url) - first doc line` bullet for an index page. */
+  private indexLine(name: string, url: string, item: Item): string {
+    const desc = firstLine(this.docsFor(item, 0));
+    return `- [\`${name}\`](${url})${desc ? ` - ${desc}` : ""}`;
+  }
+
   /**
-   * Generate meta.json for FumaDocs v14+ navigation.
-   * Includes separators, icons, and proper page ordering.
+   * Generate meta.json for FumaDocs v14+ navigation: separators per item
+   * kind, then the public submodules (as folder links, so each keeps its own
+   * meta.json).
    *
    * @see https://fumadocs.dev/docs/ui/navigation
    */
-  private generateMeta(item: Item, itemsByKind: Map<ItemKind, Item[]>): string {
-    const pages: (string | { type: string; name: string; icon?: string })[] = [];
+  private generateMeta(node: ModuleNode): string {
+    const pages: string[] = [];
 
-    if (this.options.generateIndex && item.name) {
+    if (this.options.generateIndex) {
       pages.push("index");
     }
 
-    // Add items in a logical order with FumaDocs v14+ separators
     if (this.options.groupBy === "kind") {
-      // Group by kind: add kind files with separators
       let addedAny = false;
       for (const kind of KIND_ORDER) {
-        const items = itemsByKind.get(kind);
-        if (items && items.length > 0) {
-          if (addedAny) {
-            // Add separator between kinds (FumaDocs v14+ separator syntax)
-            pages.push(`---${kindToTitle(kind)}---`);
-          }
-          pages.push(kindToFilename(kind));
-          addedAny = true;
-        }
+        if (!node.pages.some((p) => p.kind === kind)) continue;
+        if (addedAny) pages.push(`---${kindToTitle(kind)}---`);
+        pages.push(kindToFilename(kind));
+        addedAny = true;
       }
     } else {
-      // Module mode: group items by kind with separators
       for (const kind of KIND_ORDER) {
-        const items = itemsByKind.get(kind);
-        if (!items || items.length === 0) continue;
-
-        // Add separator for each kind section (FumaDocs v14+ syntax)
+        const entries = node.pages
+          .filter((p) => p.kind === kind)
+          .sort((a, b) => a.name.localeCompare(b.name));
+        if (entries.length === 0) continue;
         pages.push(`---${kindToTitle(kind)}---`);
-
-        for (const childItem of items.sort((a, b) => (a.name ?? "").localeCompare(b.name ?? ""))) {
-          if (childItem.name) {
-            pages.push(childItem.name);
-          }
-        }
+        for (const entry of entries) pages.push(entry.file);
       }
     }
 
-    // Find submodules and add them with folder icon
-    if ("module" in item.inner) {
-      const submodules = item.inner.module.items
-        .map((childId) => this.getItem(childId))
-        .filter(
-          (childItem): childItem is Item =>
-            childItem !== undefined && "module" in childItem.inner && Boolean(childItem.name)
-        )
-        .sort((a, b) => (a.name ?? "").localeCompare(b.name ?? ""));
-
-      if (submodules.length > 0) {
-        pages.push("---Modules---");
-        for (const childItem of submodules) {
-          // Reference submodules as folder LINKS rather than inline-spread
-          // extractions. The `...name` spread inlines every child into this
-          // meta.json, which duplicates "Functions" / "Structs" headers on
-          // every crate and makes the sidebar unscannable on a multi-crate
-          // workspace. Using the bare name keeps the submodule collapsed
-          // under its own folder with its own meta.json intact.
-          pages.push(childItem.name!);
-        }
+    if (node.submodules.length > 0) {
+      pages.push("---Modules---");
+      // Folder links (not `...name` spreads) keep each submodule collapsed
+      // under its own folder with its own meta.json.
+      for (const sub of [...node.submodules].sort((a, b) => a.name.localeCompare(b.name))) {
+        pages.push(sub.segments[sub.segments.length - 1]);
       }
     }
 
-    // Build meta.json with FumaDocs v14+ structure. `defaultOpen: false`
-    // keeps the sidebar compact — users explicitly expand the crates they
-    // care about instead of being hit with a wall of auto-expanded trees.
+    // `defaultOpen: false` keeps the sidebar compact.
     const meta: Record<string, unknown> = {
-      title: item.name ?? this.crate.crate_version ?? "API",
+      title: node.name,
       icon: "Folder",
       defaultOpen: false,
       pages,
@@ -829,30 +1537,21 @@ export class RustdocGenerator {
   }
 
   /**
-   * Generates a page grouping all items of a specific kind.
-   *
-   * Used when groupBy is set to "kind" to create files like `structs.mdx`,
-   * `functions.mdx`, etc. Each item is rendered with full documentation
-   * and separated by horizontal rules.
-   *
-   * @param kind - The item kind being grouped (e.g., "struct", "function")
-   * @param items - Array of items of this kind to render
-   * @param path - Module path for generating description context
-   * @returns Complete MDX content string with all items of this kind
+   * Generates a page grouping all items of a specific kind (groupBy "kind").
    */
-  private generateKindPage(kind: ItemKind, items: Item[], path: string[]): string {
+  private generateKindPage(kind: ItemKind, pages: PageEntry[], node: ModuleNode): string {
     const sections: string[] = [];
 
     sections.push(
       this.formatFrontmatter({
         title: kindToTitle(kind),
-        description: `${kindToTitle(kind)} in ${path.join("::")}`,
+        description: `${kindToTitle(kind)} in ${node.segments.join("::")}`,
       })
     );
     sections.push("");
 
-    for (const item of items.sort((a, b) => (a.name ?? "").localeCompare(b.name ?? ""))) {
-      sections.push(this.renderItem(item));
+    for (const page of [...pages].sort((a, b) => a.name.localeCompare(b.name))) {
+      sections.push(this.renderItem(page));
       sections.push("");
       sections.push("---");
       sections.push("");
@@ -862,61 +1561,26 @@ export class RustdocGenerator {
   }
 
   /**
-   * Generates a complete MDX page for a single item.
-   *
-   * This is the main page generation method for individual items. It produces:
-   * 1. YAML frontmatter via the configured frontmatter function
-   * 2. Item content via renderItem() (signature, docs, fields/variants)
-   * 3. Implementations section (for structs, enums, unions) with:
-   *    - Inherent methods and trait implementations
-   *    - Optional Tabs component to separate method types
-   * 4. "See Also" section with Cards linking to related types
-   *
-   * @param item - The item to generate a page for
-   * @param path - Module path for context and frontmatter generation
-   * @returns Complete MDX content string for the item page
+   * Generates a complete MDX page for a single item: frontmatter, the item
+   * itself (signature, docs, fields / variants / trait items), its
+   * implementations and a "See Also" card section.
    */
-  private generateItemPage(item: Item, path: string[]): string {
-    const frontmatter = this.options.frontmatter(item, [...path, item.name ?? ""]);
+  private generateItemPage(page: PageEntry): string {
+    const frontmatter = this.options.frontmatter(page.item, [...page.node.segments, page.name]);
     const sections: string[] = [];
 
     sections.push(this.formatFrontmatter(frontmatter));
     sections.push("");
-    sections.push(this.renderItem(item));
+    sections.push(this.renderItem(page));
 
-    // Render implementations for structs, enums, unions
-    const impls = this.getImplementations(item);
-    if (impls.length > 0) {
+    const impls = this.renderImplementations(page);
+    if (impls) {
       sections.push("");
-      sections.push("## Implementations");
-      sections.push("");
-
-      // Separate inherent impls from trait impls
-      const inherentImpls = impls.filter((impl) => "impl" in impl.inner && !impl.inner.impl.trait);
-      const traitImpls = impls.filter((impl) => "impl" in impl.inner && impl.inner.impl.trait);
-
-      // Use Tabs if both types exist and useTabs is enabled
-      if (this.options.useTabs && inherentImpls.length > 0 && traitImpls.length > 0) {
-        const methodsContent = inherentImpls.map((impl) => this.renderImpl(impl)).join("\n\n");
-        const traitsContent = traitImpls.map((impl) => this.renderImpl(impl)).join("\n\n");
-
-        const tabContents = new Map<string, string>();
-        tabContents.set("Methods", methodsContent);
-        tabContents.set("Trait Implementations", traitsContent);
-
-        sections.push(renderTabs(["Methods", "Trait Implementations"], tabContents));
-      } else {
-        // Render without tabs
-        for (const impl of impls) {
-          sections.push(this.renderImpl(impl));
-          sections.push("");
-        }
-      }
+      sections.push(impls);
     }
 
-    // Add "See Also" section with cross-references
     if (this.options.useCards) {
-      const crossRefs = this.extractCrossReferences(item);
+      const crossRefs = this.extractCrossReferences(page.item);
       if (crossRefs.length > 0) {
         sections.push("");
         sections.push("## See Also");
@@ -926,6 +1590,58 @@ export class RustdocGenerator {
     }
 
     return sections.join("\n");
+  }
+
+  /**
+   * Renders the "Implementations" section of a struct / enum / union page:
+   * inherent impls (every method), trait impls (each with its header, so
+   * marker impls like `Copy` show, plus associated items and documented
+   * methods) and the auto traits. Inherent and trait impls go in Tabs when
+   * both exist.
+   */
+  private renderImplementations(page: PageEntry): string {
+    const impls = this.getImplementations(page.item);
+    const auto = this.renderAutoTraits(page.item);
+    if (impls.length === 0 && !auto) return "";
+    const sections: string[] = ["## Implementations", ""];
+
+    const inherentImpls = impls.filter((impl) => "impl" in impl.inner && !impl.inner.impl.trait);
+    const traitImpls = impls.filter((impl) => "impl" in impl.inner && impl.inner.impl.trait);
+    const render = (list: Item[]): string =>
+      list.map((impl) => this.renderImpl(impl, page.item, page.gates)).join("\n\n");
+    const traitBody = [render(traitImpls), auto].filter(Boolean).join("\n\n");
+
+    if (this.options.useTabs && inherentImpls.length > 0 && traitBody) {
+      const tabContents = new Map<string, string>();
+      tabContents.set("Methods", render(inherentImpls));
+      tabContents.set("Trait Implementations", traitBody);
+      sections.push(renderTabs(["Methods", "Trait Implementations"], tabContents));
+    } else {
+      for (const body of [render(inherentImpls), traitBody]) {
+        if (!body) continue;
+        sections.push(body);
+        sections.push("");
+      }
+    }
+    return sections.join("\n");
+  }
+
+  /**
+   * "Auto Trait Implementations" for a type: rustdoc's synthetic impls
+   * (`Send`, `Sync`, `Unpin`, ...), negative ones as `!Send`.
+   */
+  private renderAutoTraits(item: Item): string {
+    const impls = this.implIdsOf(item)
+      .map((id) => this.getItem(id))
+      .filter((i): i is Item => i !== undefined && "impl" in i.inner && i.inner.impl.is_synthetic);
+    const names: string[] = [];
+    for (const impl of impls) {
+      if (!("impl" in impl.inner) || !impl.inner.impl.trait) continue;
+      const name = getPathName(impl.inner.impl.trait).split("::").pop() ?? "";
+      names.push(inlineCode(`${impl.inner.impl.is_negative ? "!" : ""}${name}`));
+    }
+    if (names.length === 0) return "";
+    return `### Auto Trait Implementations\n\n${names.join(" · ")}`;
   }
 
   /**
@@ -1045,14 +1761,15 @@ export class RustdocGenerator {
       const refKind = getItemKind(refItem.inner);
       if (refKind === "unknown") continue;
 
-      // Build path to referenced item
-      const path = this.getPath(refId);
-      const href = path ? `./${path.slice(1).join("/")}` : `./${refItem.name}`;
+      // Link to the referenced item's canonical page; skip items that have
+      // none (private, or only reachable through an impl).
+      const href = this.itemUrls.get(String(refId));
+      if (!href) continue;
 
       cards.push({
         title: refItem.name,
         href,
-        description: refItem.docs?.split("\n")[0] ?? `A ${refKind}`,
+        description: summaryLine(refItem.docs) || `A ${refKind}`,
         icon: kindToIcon(refKind),
       });
     }
@@ -1198,78 +1915,85 @@ export class RustdocGenerator {
    * @param item - The item to render
    * @returns MDX content string for the item
    */
-  private renderItem(item: Item): string {
+  private renderItem(page: PageEntry): string {
+    const { item, name } = page;
     const kind = getItemKind(item.inner);
     const sections: string[] = [];
 
-    // Deprecation warning using FumaDocs Callout component
-    if (item.deprecation) {
-      const sinceText = item.deprecation.since ? ` since ${item.deprecation.since}` : "";
-      const noteText = item.deprecation.note ?? "This item is deprecated.";
-      sections.push(
-        `<Callout type="warn" title="Deprecated${sinceText}">\n${noteText}\n</Callout>`
-      );
+    // Deprecation warning: the title goes through JSON escaping and the note
+    // through docstring sanitization, so quotes or `<T>` cannot break MDX.
+    const deprecation = this.renderDeprecationOf(item);
+    if (deprecation) {
+      sections.push(deprecation);
       sections.push("");
     }
 
-    // Feature gate callout (check attrs for cfg(feature = "..."))
-    const featureGate = this.extractFeatureGate(item.attrs);
-    if (featureGate) {
-      sections.push(renderFeatureGateCallout(featureGate));
+    // Stability (format 58+, staged_api crates such as std).
+    if (item.stability?.level === "unstable") {
+      const feature = item.stability.feature
+        ? ` (feature ${inlineCode(item.stability.feature)})`
+        : "";
+      sections.push(`**Unstable**${feature}`);
+      sections.push("");
+    }
+
+    // Feature gate callout: #[doc(cfg)] / #[cfg], module gates inherited.
+    const gate = this.renderGate(page.gates);
+    if (gate) {
+      sections.push(gate);
       sections.push("");
     }
 
     // Safety callout for unsafe items
     const isUnsafe = this.isUnsafeItem(item);
     if (isUnsafe) {
-      sections.push(renderSafetyCallout(item.docs));
+      sections.push(renderSafetyCallout(this.docsFor(item, 0)));
       sections.push("");
     }
 
     // Render based on item kind
     switch (kind) {
       case "function":
-        sections.push(this.renderFunction(item));
+        sections.push(this.renderFunction(item, name));
         break;
       case "struct":
-        sections.push(this.renderStruct(item));
+        sections.push(this.renderStruct(item, name));
         break;
       case "union":
-        sections.push(this.renderUnion(item));
+        sections.push(this.renderUnion(item, name));
         break;
       case "enum":
-        sections.push(this.renderEnum(item));
+        sections.push(this.renderEnum(item, name));
         break;
       case "trait":
-        sections.push(this.renderTrait(item));
+        sections.push(this.renderTrait(item, name));
         break;
       case "type_alias":
-        sections.push(this.renderTypeAlias(item));
+        sections.push(this.renderTypeAlias(item, name));
         break;
       case "constant":
       case "static":
-        sections.push(this.renderConstant(item));
+        sections.push(this.renderConstant(item, name));
         break;
       case "macro":
-        sections.push(this.renderMacro(item));
+      case "proc_derive":
+      case "proc_attribute":
+        sections.push(this.renderMacro(item, name));
         break;
       default:
-        sections.push(`## ${item.name ?? "Unknown"}`);
-        if (item.docs) {
-          sections.push("");
-          sections.push(item.docs);
-        }
+        sections.push(`## ${name}`);
+        this.pushDocs(sections, item, 2);
     }
 
     // Add panics callout if docs contain # Panics section (for functions)
     if (kind === "function") {
-      const panicsCallout = renderPanicsCallout(item.docs);
+      const panicsCallout = renderPanicsCallout(this.docsFor(item, 0));
       if (panicsCallout) {
         sections.push("");
         sections.push(panicsCallout);
       }
 
-      const errorsCallout = renderErrorsCallout(item.docs);
+      const errorsCallout = renderErrorsCallout(this.docsFor(item, 0));
       if (errorsCallout) {
         sections.push("");
         sections.push(errorsCallout);
@@ -1293,37 +2017,15 @@ export class RustdocGenerator {
   }
 
   /**
-   * Extract feature gate from item attributes.
-   * Looks for patterns like `#[cfg(feature = "feature_name")]`
-   * Supports both old string format and new object format (format 56+).
+   * Feature-gate callout for a conjunction of cfg predicates, with a
+   * `Cargo.toml` snippet naming the real package and version.
    */
-  private extractFeatureGate(attrs: Attribute[]): string | null {
-    for (const attr of attrs) {
-      // Normalize attribute to string
-      let attrStr: string;
-      if (typeof attr === "string") {
-        attrStr = attr;
-      } else if (typeof attr === "object" && attr !== null && "other" in attr) {
-        attrStr = (attr as { other: string }).other;
-      } else {
-        continue;
-      }
-
-      // Match cfg(feature = "...") and cfg_attr(feature = "...", ...)
-      // Also handles cfg_attr(not(feature = "..."), ...) and similar patterns
-      // Support both double and single quotes for compatibility with different rustdoc versions
-      const doubleQuoteMatch =
-        /(?:cfg|cfg_attr)\s*\(\s*(?:not\s*\(\s*)?feature\s*=\s*"([^"]+)"/.exec(attrStr);
-      if (doubleQuoteMatch) {
-        return doubleQuoteMatch[1];
-      }
-      const singleQuoteMatch =
-        /(?:cfg|cfg_attr)\s*\(\s*(?:not\s*\(\s*)?feature\s*=\s*'([^']+)'/.exec(attrStr);
-      if (singleQuoteMatch) {
-        return singleQuoteMatch[1];
-      }
-    }
-    return null;
+  private renderGate(gates: Cfg[]): string {
+    const text = describeCfgs(gates);
+    if (!text) return "";
+    const crateName =
+      this.options.packageName ?? this.getItem(this.crate.root)?.name ?? "your-crate";
+    return renderCfgCallout(text, requiredFeatures(gates), crateName, this.crate.crate_version);
   }
 
   /**
@@ -1343,21 +2045,20 @@ export class RustdocGenerator {
    * @param item - The function item to render (must have 'function' in inner)
    * @returns MDX content string for the function
    */
-  private renderFunction(item: Item): string {
+  private renderFunction(item: Item, name: string): string {
     if (!("function" in item.inner)) return "";
     const fn = item.inner.function;
     const sections: string[] = [];
 
-    sections.push(`## \`${item.name}\``);
+    sections.push(`## \`${name}\``);
     sections.push("");
     sections.push("```rust");
-    sections.push(formatFunctionSignature(item.name ?? "", fn));
+    sections.push(...attrLines(item));
+    sections.push(formatFunctionSignature(name, fn));
     sections.push("```");
+    this.pushSource(sections, item);
 
-    if (item.docs) {
-      sections.push("");
-      sections.push(item.docs);
-    }
+    this.pushDocs(sections, item, 2, this.calloutSections(item));
 
     return sections.join("\n");
   }
@@ -1386,21 +2087,20 @@ export class RustdocGenerator {
    * @param item - The struct item to render (must have 'struct' in inner)
    * @returns MDX content string for the struct
    */
-  private renderStruct(item: Item): string {
+  private renderStruct(item: Item, name: string): string {
     if (!("struct" in item.inner)) return "";
     const struct = item.inner.struct;
     const sections: string[] = [];
 
-    sections.push(`## \`${item.name}\``);
+    sections.push(`## \`${name}\``);
     sections.push("");
     sections.push("```rust");
-    sections.push(formatStructSignature(item.name ?? "", struct));
+    sections.push(...attrLines(item));
+    sections.push(formatStructSignature(name, struct));
     sections.push("```");
+    this.pushSource(sections, item);
 
-    if (item.docs) {
-      sections.push("");
-      sections.push(item.docs);
-    }
+    this.pushDocs(sections, item, 2, this.calloutSections(item));
 
     // Render fields
     if (isPlainStruct(struct.kind)) {
@@ -1412,9 +2112,7 @@ export class RustdocGenerator {
         for (const fieldId of fields) {
           const field = this.getItem(fieldId);
           if (!field) continue;
-          sections.push(
-            `- \`${field.name}\`: ${this.formatFieldType(field)}${field.docs ? ` - ${field.docs.split("\n")[0]}` : ""}`
-          );
+          sections.push(this.fieldLine(field.name ?? "_", field));
         }
       }
     }
@@ -1443,21 +2141,20 @@ export class RustdocGenerator {
    * @param item - The union item to render (must have 'union' in inner)
    * @returns MDX content string for the union
    */
-  private renderUnion(item: Item): string {
+  private renderUnion(item: Item, name: string): string {
     if (!("union" in item.inner)) return "";
     const union = item.inner.union;
     const sections: string[] = [];
 
-    sections.push(`## \`${item.name}\``);
+    sections.push(`## \`${name}\``);
     sections.push("");
     sections.push("```rust");
-    sections.push(formatUnionSignature(item.name ?? "", union));
+    sections.push(...attrLines(item));
+    sections.push(formatUnionSignature(name, union));
     sections.push("```");
+    this.pushSource(sections, item);
 
-    if (item.docs) {
-      sections.push("");
-      sections.push(item.docs);
-    }
+    this.pushDocs(sections, item, 2, this.calloutSections(item));
 
     // Render fields
     if (union.fields.length > 0) {
@@ -1467,9 +2164,7 @@ export class RustdocGenerator {
       for (const fieldId of union.fields) {
         const field = this.getItem(fieldId);
         if (!field) continue;
-        sections.push(
-          `- \`${field.name}\`: ${this.formatFieldType(field)}${field.docs ? ` - ${field.docs.split("\n")[0]}` : ""}`
-        );
+        sections.push(this.fieldLine(field.name ?? "_", field));
       }
     }
 
@@ -1508,21 +2203,20 @@ export class RustdocGenerator {
    * @param item - The enum item to render (must have 'enum' in inner)
    * @returns MDX content string for the enum
    */
-  private renderEnum(item: Item): string {
+  private renderEnum(item: Item, name: string): string {
     if (!("enum" in item.inner)) return "";
     const enumDef = item.inner.enum;
     const sections: string[] = [];
 
-    sections.push(`## \`${item.name}\``);
+    sections.push(`## \`${name}\``);
     sections.push("");
     sections.push("```rust");
-    sections.push(formatEnumSignature(item.name ?? "", enumDef));
+    sections.push(...attrLines(item));
+    sections.push(formatEnumSignature(name, enumDef));
     sections.push("```");
+    this.pushSource(sections, item);
 
-    if (item.docs) {
-      sections.push("");
-      sections.push(item.docs);
-    }
+    this.pushDocs(sections, item, 2, this.calloutSections(item));
 
     // Render variants
     if (enumDef.variants.length > 0) {
@@ -1538,12 +2232,11 @@ export class RustdocGenerator {
 
         // Render variant with its fields
         const variantSig = this.formatVariantSignature(variantName, variant);
-        sections.push(`#### \`${variantSig}\``);
+        sections.push(
+          this.memberHeading(variantSig, this.anchorsFor(item).get(String(variantItem.id)))
+        );
 
-        if (variantItem.docs) {
-          sections.push("");
-          sections.push(variantItem.docs);
-        }
+        this.pushDocs(sections, variantItem, 4);
 
         // Render struct-style variant fields
         if (isStructVariant(variant.kind)) {
@@ -1555,9 +2248,7 @@ export class RustdocGenerator {
             for (const fieldId of fields) {
               const field = this.getItem(fieldId);
               if (!field) continue;
-              const fieldType = this.formatFieldType(field);
-              const fieldDoc = field.docs ? ` - ${field.docs.split("\n")[0]}` : "";
-              sections.push(`- \`${field.name}\`: \`${fieldType}\`${fieldDoc}`);
+              sections.push(this.fieldLine(field.name ?? "_", field));
             }
           }
         }
@@ -1572,9 +2263,7 @@ export class RustdocGenerator {
             for (let i = 0; i < tupleFields.length; i++) {
               const field = this.getItem(tupleFields[i]);
               if (!field) continue;
-              const fieldType = this.formatFieldType(field);
-              const fieldDoc = field.docs ? ` - ${field.docs.split("\n")[0]}` : "";
-              sections.push(`- \`${i}\`: \`${fieldType}\`${fieldDoc}`);
+              sections.push(this.fieldLine(String(i), field));
             }
           }
         }
@@ -1667,45 +2356,111 @@ export class RustdocGenerator {
    * @param item - The trait item to render (must have 'trait' in inner)
    * @returns MDX content string for the trait
    */
-  private renderTrait(item: Item): string {
+  private renderTrait(item: Item, name: string): string {
     if (!("trait" in item.inner)) return "";
     const trait = item.inner.trait;
     const sections: string[] = [];
 
-    sections.push(`## \`${item.name}\``);
+    sections.push(`## \`${name}\``);
     sections.push("");
     sections.push("```rust");
-    sections.push(formatTraitSignature(item.name ?? "", trait));
+    sections.push(...attrLines(item));
+    sections.push(formatTraitSignature(name, trait));
     sections.push("```");
+    this.pushSource(sections, item);
 
-    if (item.docs) {
-      sections.push("");
-      sections.push(item.docs);
-    }
+    this.pushDocs(sections, item, 2, this.calloutSections(item));
 
-    // Render required methods
-    const methods = trait.items
+    const members = trait.items
       .map((id) => this.getItem(id))
-      .filter((i): i is Item => i !== undefined && "function" in i.inner);
-
-    if (methods.length > 0) {
+      .filter((i): i is Item => i !== undefined);
+    const anchors = this.anchorsFor(item);
+    const groups: [string, Item[]][] = [
+      ["Associated Types", members.filter((m) => "assoc_type" in m.inner)],
+      ["Associated Constants", members.filter((m) => "assoc_const" in m.inner)],
+      [
+        "Required Methods",
+        members.filter((m) => "function" in m.inner && !m.inner.function.has_body),
+      ],
+      [
+        "Provided Methods",
+        members.filter((m) => "function" in m.inner && m.inner.function.has_body),
+      ],
+    ];
+    for (const [title, group] of groups) {
+      if (group.length === 0) continue;
       sections.push("");
-      sections.push("### Required Methods");
+      sections.push(`### ${title}`);
       sections.push("");
-      for (const method of methods) {
-        if (!("function" in method.inner)) continue;
-        sections.push("```rust");
-        sections.push(formatFunctionSignature(method.name ?? "", method.inner.function));
-        sections.push("```");
-        if (method.docs) {
-          sections.push("");
-          sections.push(method.docs);
-        }
-        sections.push("");
+      for (const member of group) {
+        this.pushMember(sections, member, anchors.get(String(member.id)));
       }
     }
 
+    const implementors = this.renderImplementors(trait.implementations);
+    if (implementors) {
+      sections.push("");
+      sections.push("### Implementors");
+      sections.push("");
+      sections.push(implementors);
+    }
+
     return sections.join("\n");
+  }
+
+  /**
+   * Signature of a trait or impl member: a method, `type Name: Bounds = T;`
+   * or `const NAME: T = value;`.
+   */
+  private formatMemberSignature(member: Item): string {
+    const name = member.name ?? "";
+    if ("function" in member.inner) return formatFunctionSignature(name, member.inner.function);
+    if ("assoc_type" in member.inner) {
+      const at = member.inner.assoc_type;
+      const bounds = at.bounds.map((b) => formatGenericBound(b)).filter(Boolean);
+      const where = at.generics.where_predicates.length > 0 ? " where ..." : "";
+      return (
+        `type ${name}${formatGenerics(at.generics)}` +
+        (bounds.length > 0 ? `: ${bounds.join(" + ")}` : "") +
+        (at.type ? ` = ${formatType(at.type)}` : "") +
+        `${where};`
+      );
+    }
+    if ("assoc_const" in member.inner) {
+      const ac = member.inner.assoc_const as { type: Type; value?: string | null };
+      return `const ${name}: ${formatType(ac.type)}${ac.value != null ? ` = ${ac.value}` : ""};`;
+    }
+    return name;
+  }
+
+  /**
+   * Bullet list of the types implementing a trait, linked to their pages
+   * when they have one.
+   */
+  private renderImplementors(implIds: Id[]): string {
+    const lines: string[] = [];
+    const seen = new Set<string>();
+    for (const implId of implIds) {
+      const impl = this.getItem(implId);
+      if (!impl || !("impl" in impl.inner)) continue;
+      const implDef = impl.inner.impl;
+      if (implDef.is_synthetic) continue;
+      // Name the implementing type as its page does (`Circle`, not the
+      // `shapes::Circle` path the impl happened to be written with).
+      const forPath = "resolved_path" in implDef.for ? implDef.for.resolved_path : undefined;
+      const target = forPath
+        ? (getPathName(forPath).split("::").pop() ?? "") + formatGenericArgs(forPath.args)
+        : formatType(implDef.for);
+      const key = `${implDef.is_negative ? "!" : ""}${target}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const href = forPath ? this.resolveIdUrl(forPath.id) : null;
+      const label = inlineCode(key);
+      lines.push(
+        `- ${href ? `[${label}](${href})` : label}${implDef.blanket_impl ? " (blanket)" : ""}`
+      );
+    }
+    return lines.sort((a, b) => a.localeCompare(b)).join("\n");
   }
 
   /**
@@ -1725,23 +2480,19 @@ export class RustdocGenerator {
    * @param item - The type alias item to render (must have 'type_alias' in inner)
    * @returns MDX content string for the type alias
    */
-  private renderTypeAlias(item: Item): string {
+  private renderTypeAlias(item: Item, name: string): string {
     if (!("type_alias" in item.inner)) return "";
     const alias = item.inner.type_alias;
     const sections: string[] = [];
 
-    sections.push(`## \`${item.name}\``);
+    sections.push(`## \`${name}\``);
     sections.push("");
     sections.push("```rust");
-    sections.push(
-      `type ${item.name}${formatGenerics(alias.generics)} = ${formatType(alias.type)};`
-    );
+    sections.push(`type ${name}${formatGenerics(alias.generics)} = ${formatType(alias.type)};`);
     sections.push("```");
+    this.pushSource(sections, item);
 
-    if (item.docs) {
-      sections.push("");
-      sections.push(item.docs);
-    }
+    this.pushDocs(sections, item, 2, this.calloutSections(item));
 
     return sections.join("\n");
   }
@@ -1772,9 +2523,9 @@ export class RustdocGenerator {
    * @param item - The constant/static item to render (must have 'constant' or 'static' in inner)
    * @returns MDX content string for the constant or static
    */
-  private renderConstant(item: Item): string {
+  private renderConstant(item: Item, name: string): string {
     const sections: string[] = [];
-    sections.push(`## \`${item.name}\``);
+    sections.push(`## \`${name}\``);
 
     if ("constant" in item.inner) {
       const constant = item.inner.constant;
@@ -1784,23 +2535,22 @@ export class RustdocGenerator {
       // Show value if available, otherwise just the expression
       const constExpr = constant.const;
       const value = constExpr.value ?? constExpr.expr;
-      sections.push(`const ${item.name}: ${typeName} = ${value};`);
+      sections.push(`const ${name}: ${typeName} = ${value};`);
       sections.push("```");
+      this.pushSource(sections, item);
     } else if ("static" in item.inner) {
       const staticDef = item.inner.static;
       const typeName = formatType(staticDef.type);
       sections.push("");
       sections.push("```rust");
       sections.push(
-        `static ${staticDef.is_mutable ? "mut " : ""}${item.name}: ${typeName} = ${staticDef.expr};`
+        `static ${staticDef.is_mutable ? "mut " : ""}${name}: ${typeName} = ${staticDef.expr};`
       );
       sections.push("```");
+      this.pushSource(sections, item);
     }
 
-    if (item.docs) {
-      sections.push("");
-      sections.push(item.docs);
-    }
+    this.pushDocs(sections, item, 2, this.calloutSections(item));
 
     return sections.join("\n");
   }
@@ -1824,21 +2574,40 @@ export class RustdocGenerator {
    * @param item - The macro item to render (must have 'macro' in inner)
    * @returns MDX content string for the macro
    */
-  private renderMacro(item: Item): string {
+  private renderMacro(item: Item, name: string): string {
     const sections: string[] = [];
-    sections.push(`## \`${item.name}!\``);
-    sections.push("");
 
-    if ("macro" in item.inner) {
-      sections.push("```rust");
-      sections.push(item.inner.macro);
-      sections.push("```");
-    }
-
-    if (item.docs) {
+    if ("proc_macro" in item.inner) {
+      // Procedural macros: show how they are invoked.
+      const pm = item.inner.proc_macro;
+      const usage =
+        pm.kind === "derive"
+          ? `#[derive(${name})]`
+          : pm.kind === "attr"
+            ? `#[${name}]`
+            : `${name}!()`;
+      sections.push(`## ${inlineCode(pm.kind === "bang" ? `${name}!` : name)}`);
       sections.push("");
-      sections.push(item.docs);
+      sections.push("```rust");
+      sections.push(usage);
+      sections.push("```");
+      if (pm.helpers.length > 0) {
+        sections.push("");
+        sections.push(
+          `Helper attributes: ${pm.helpers.map((h) => inlineCode(`#[${h}]`)).join(", ")}`
+        );
+      }
+    } else {
+      sections.push(`## \`${name}!\``);
+      sections.push("");
+      if ("macro" in item.inner) {
+        sections.push("```rust");
+        sections.push(item.inner.macro);
+        sections.push("```");
+      }
     }
+
+    this.pushDocs(sections, item, 2, this.calloutSections(item));
 
     return sections.join("\n");
   }
@@ -1865,7 +2634,7 @@ export class RustdocGenerator {
    * @param impl - The impl item to render (must have 'impl' in inner)
    * @returns MDX content string for the implementation block
    */
-  private renderImpl(impl: Item): string {
+  private renderImpl(impl: Item, owner?: Item, ownerGates: Cfg[] = []): string {
     if (!("impl" in impl.inner)) return "";
     const implDef = impl.inner.impl;
     const sections: string[] = [];
@@ -1895,113 +2664,71 @@ export class RustdocGenerator {
     }
     header += ` ${formatType(implDef.for)}`;
 
-    sections.push(`### \`${header}\``);
+    sections.push(`### ${inlineCode(header)}`);
     sections.push("");
 
-    // Render impl methods
-    for (const methodId of implDef.items) {
-      const method = this.getItem(methodId);
-      if (!method || !("function" in method.inner)) continue;
-
-      sections.push("```rust");
-      sections.push(formatFunctionSignature(method.name ?? "", method.inner.function));
-      sections.push("```");
-
-      if (method.docs) {
-        sections.push("");
-        sections.push(method.docs);
-      }
+    // An impl gated on more than the type itself (e.g. a feature-only
+    // inherent impl) says so under its header.
+    const ownerKeys = new Set(ownerGates.map((g) => JSON.stringify(g)));
+    const extra = dedupeCfgs(itemCfgs(impl)).filter((g) => !ownerKeys.has(JSON.stringify(g)));
+    if (extra.length > 0) {
+      sections.push(`*${describeCfgs(extra)}*`);
       sections.push("");
+    }
+
+    const children = implDef.items
+      .map((id) => this.getItem(id))
+      .filter((i): i is Item => i !== undefined);
+
+    // Associated types and constants of a trait impl, as one code block.
+    const assoc = children.filter((c) => "assoc_type" in c.inner || "assoc_const" in c.inner);
+    if (implDef.trait && assoc.length > 0) {
+      sections.push("```rust");
+      for (const member of assoc) sections.push(this.formatMemberSignature(member));
+      sections.push("```");
+      sections.push("");
+    }
+
+    // Methods, each under its own anchored heading so it shows in the table
+    // of contents and intra-doc links can target it. Trait-impl methods are
+    // shown only when documented (the trait's page documents the rest).
+    const anchors = owner ? this.anchorsFor(owner) : new Map<string, string>();
+    for (const member of children) {
+      const anchor = anchors.get(String(member.id));
+      if (implDef.trait && anchor === undefined) continue;
+      if (!implDef.trait && !("function" in member.inner) && !("assoc_const" in member.inner)) {
+        continue;
+      }
+      if (implDef.trait && !("function" in member.inner)) continue;
+
+      this.pushMember(sections, member, anchor);
     }
 
     return sections.join("\n");
   }
 
-  /**
-   * Check if an implementation should be excluded from documentation.
-   *
-   * @param impl - The implementation item to check
-   * @returns true if the impl should be excluded, false if it should be included
-   */
-  private shouldExcludeImpl(impl: Item): boolean {
-    if (!("impl" in impl.inner)) return true;
-
-    const implDef = impl.inner.impl;
-
-    // FILTER 1: Blanket implementations
-    // Generic impls like `impl<T> From<T> for T` that apply to all types
-    if (implDef.blanket_impl) return true;
-
-    // FILTER 2: Synthetic implementations
-    // Auto-generated impls for auto traits like Send, Sync, Unpin
-    if (implDef.is_synthetic) return true;
-
-    // FILTER 3: Empty external trait implementations
-    // Trait impls with no local method overrides (all defaults)
-    if (implDef.trait && implDef.items.length === 0) return true;
-
-    return false;
+  /** Impl ids recorded on a struct, enum or union. */
+  private implIdsOf(item: Item): Id[] {
+    if ("struct" in item.inner) return item.inner.struct.impls;
+    if ("enum" in item.inner) return item.inner.enum.impls;
+    if ("union" in item.inner) return item.inner.union.impls;
+    return [];
   }
 
   /**
-   * Check if a trait implementation has at least one documented method.
-   *
-   * @param impl - The implementation item to check
-   * @returns true if the impl has documented methods or is an inherent impl
-   */
-  private hasDocumentedMethods(impl: Item): boolean {
-    if (!("impl" in impl.inner)) return false;
-
-    const implDef = impl.inner.impl;
-
-    // Inherent impls (no trait) are always included
-    if (!implDef.trait) return true;
-
-    // For trait impls, require at least one documented method
-    return implDef.items.some((methodId) => {
-      const method = this.getItem(methodId);
-      return method?.docs !== undefined;
-    });
-  }
-
-  /**
-   * Gets all relevant implementations for a type (struct, enum, or union).
-   *
-   * This method retrieves and filters implementations to show only the most
-   * useful ones in the documentation. The filtering removes:
-   *
-   * - **Blanket implementations**: Generic impls like `impl<T> From<T> for T`
-   * - **Synthetic implementations**: Compiler-generated auto trait impls
-   * - **Empty external trait impls**: Trait impls using only default methods
-   * - **Undocumented trait impls**: Trait impls without any documented methods
-   *
-   * Inherent impls (the type's own methods) are always included.
-   *
-   * @param item - The type item (struct, enum, or union) to get implementations for
-   * @returns Array of impl Items that passed all filters
+   * The implementations rendered on a type's page: inherent impls and trait
+   * impls, without blanket impls (`impl<T> From<T> for T`, noise on every
+   * type) and synthetic auto-trait impls (listed compactly instead, see
+   * {@link renderAutoTraits}).
    */
   private getImplementations(item: Item): Item[] {
-    // Extract impl IDs from the type
-    let implIds: Id[] = [];
-    if ("struct" in item.inner) implIds = item.inner.struct.impls;
-    else if ("enum" in item.inner) implIds = item.inner.enum.impls;
-    else if ("union" in item.inner) implIds = item.inner.union.impls;
-
     const results: Item[] = [];
-
-    for (const implId of implIds) {
+    for (const implId of this.implIdsOf(item)) {
       const impl = this.getItem(implId);
-      if (!impl) continue;
-
-      // Apply exclusion filters
-      if (this.shouldExcludeImpl(impl)) continue;
-
-      // Check for documented methods (trait impls only)
-      if (!this.hasDocumentedMethods(impl)) continue;
-
+      if (!impl || !("impl" in impl.inner)) continue;
+      if (impl.inner.impl.blanket_impl || impl.inner.impl.is_synthetic) continue;
       results.push(impl);
     }
-
     return results;
   }
 
@@ -2023,6 +2750,16 @@ export class RustdocGenerator {
       defaultKeyType: "PLAIN", // Keep keys unquoted
     }).trim();
     return `---\n${yamlContent}\n---`;
+  }
+
+  /**
+   * One `- \`name\`: \`Type\` - first doc line` bullet for a struct, union
+   * or variant field. The type is always inline code: rendered bare,
+   * `Option<String>` or `Vec<[u8; 32]>` would be parsed by MDX as JSX.
+   */
+  private fieldLine(name: string, field: Item): string {
+    const doc = firstLine(this.docsFor(field, 0));
+    return `- ${inlineCode(name)}: ${inlineCode(this.formatFieldType(field))}${doc ? ` - ${doc}` : ""}`;
   }
 
   /**
@@ -2057,8 +2794,9 @@ function defaultFrontmatter(item: Item, path: string[]): Record<string, unknown>
   // Handle unknown kinds gracefully with default icon
   const icon = kind === "unknown" ? "FileText" : kindToIcon(kind);
   return {
-    title: item.name ?? path[path.length - 1] ?? "API",
-    description: item.docs?.split("\n")[0] ?? `Documentation for ${item.name}`,
+    title: path[path.length - 1] ?? item.name ?? "API",
+    description:
+      summaryLine(item.docs) || `Documentation for ${path[path.length - 1] ?? item.name}`,
     icon,
   };
 }
@@ -2097,6 +2835,8 @@ function kindToFilename(kind: ItemKind): string {
     constant: "constants",
     static: "statics",
     macro: "macros",
+    proc_derive: "derives",
+    proc_attribute: "attributes",
   };
   return map[kind] ?? kind;
 }
@@ -2122,6 +2862,8 @@ function kindToTitle(kind: ItemKind): string {
     constant: "Constants",
     static: "Statics",
     macro: "Macros",
+    proc_derive: "Derive Macros",
+    proc_attribute: "Attribute Macros",
   };
   return map[kind] ?? kind;
 }
@@ -2144,6 +2886,8 @@ function kindToIcon(kind: ItemKind): string {
     constant: "Hash",
     static: "Database",
     macro: "Wand2",
+    proc_derive: "Wand2",
+    proc_attribute: "Wand2",
     module: "Folder",
   };
   return map[kind] ?? "FileText";

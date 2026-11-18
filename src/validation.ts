@@ -3,7 +3,7 @@
  *
  * @module validation
  * @description Validates rustdoc JSON structure using Zod schemas with
- * support for format versions 35-57 (Rust 1.76+).
+ * support for format versions 35-60 (Rust 1.76+).
  *
  * Uses LOOSE validation for item.inner to allow forward compatibility
  * with new rustdoc versions - detailed validation happens at render time.
@@ -19,10 +19,13 @@ import type { RustdocCrate } from "./types.js";
 export const MIN_FORMAT_VERSION = 35;
 
 /**
- * Maximum known rustdoc format version (Rust 1.85).
+ * Maximum known rustdoc format version (60: Rust 1.98).
  * Versions higher than this will trigger a warning but not fail.
+ *
+ * 58-60 are additive over 57: `Item.stability`, `Item.const_stability` and
+ * `default_unstable` on functions and associated items.
  */
-export const MAX_FORMAT_VERSION = 57;
+export const MAX_FORMAT_VERSION = 60;
 
 /**
  * Schema for ItemSummary in the paths index.
@@ -89,6 +92,18 @@ const SpanSchema = z
   .nullish();
 
 /**
+ * Schema for the stability attributes of format 58+ (`#[stable]` /
+ * `#[unstable]`; only set for crates using staged_api, e.g. std).
+ */
+const StabilitySchema = z
+  .object({
+    level: z.string(),
+    feature: z.string().nullish(),
+  })
+  .passthrough()
+  .nullish();
+
+/**
  * LOOSE schema for Item.
  *
  * Uses z.record(z.string(), z.unknown()) for inner to allow any item structure.
@@ -97,22 +112,28 @@ const SpanSchema = z
  *
  * Links and attrs are optional for format drift tolerance.
  */
-const ItemSchema = z.object({
-  id: IdSchema, // Changed: accepts string or number
-  crate_id: z.number(),
-  name: z.string().nullish(), // name can be null for some items (impl blocks)
-  span: SpanSchema,
-  visibility: VisibilitySchema,
-  docs: z.string().nullish(),
-  links: z.record(z.string(), IdSchema).optional().default({}), // Changed: ID values
-  // In format 56+, attrs can be objects like { "other": "#[...]" } or { "must_use": { "reason": null } }
-  attrs: z
-    .array(z.union([z.string(), z.record(z.string(), z.unknown())]))
-    .optional()
-    .default([]),
-  deprecation: DeprecationSchema,
-  inner: z.record(z.string(), z.unknown()), // LOOSE: validate at render time
-});
+const ItemSchema = z
+  .object({
+    id: IdSchema, // Changed: accepts string or number
+    crate_id: z.number(),
+    name: z.string().nullish(), // name can be null for some items (impl blocks)
+    span: SpanSchema,
+    visibility: VisibilitySchema,
+    docs: z.string().nullish(),
+    links: z.record(z.string(), IdSchema).optional().default({}), // Changed: ID values
+    // In format 56+, attrs can be objects like { "other": "#[...]" } or { "must_use": { "reason": null } }
+    attrs: z
+      .array(z.union([z.string(), z.record(z.string(), z.unknown())]))
+      .optional()
+      .default([]),
+    deprecation: DeprecationSchema,
+    stability: StabilitySchema, // format 58+
+    const_stability: StabilitySchema, // format 58+
+    inner: z.record(z.string(), z.unknown()), // LOOSE: validate at render time
+  })
+  // Keep fields this schema does not know yet instead of stripping them:
+  // newer format versions add item metadata the generator may read.
+  .passthrough();
 
 /**
  * Main schema for RustdocCrate.
@@ -297,7 +318,7 @@ export function validateRustdocJson(data: unknown): {
   // more specific `ItemInner` discriminated union type. This is intentional:
   // we validate loosely at parse time and strictly at render time.
   return {
-    crate: crate as RustdocCrate,
+    crate: crate as unknown as RustdocCrate,
     warnings,
   };
 }

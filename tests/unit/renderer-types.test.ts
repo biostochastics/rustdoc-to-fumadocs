@@ -490,7 +490,7 @@ describe("formatType", () => {
           args: undefined,
         },
       };
-      expect(formatType(type)).toBe("<Self as ?>::Output");
+      expect(formatType(type)).toBe("Self::Output");
     });
   });
 

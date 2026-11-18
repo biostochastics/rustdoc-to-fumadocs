@@ -16,7 +16,7 @@
 
 <p align="center">
   <a href="https://www.typescriptlang.org/"><img src="https://img.shields.io/badge/TypeScript-5.3+-blue" alt="TypeScript: 5.3+"></a>
-  <a href="https://nodejs.org/"><img src="https://img.shields.io/badge/Node.js-18+-green" alt="Node.js: 18+"></a>
+  <a href="https://nodejs.org/"><img src="https://img.shields.io/badge/Node.js-20+-green" alt="Node.js: 20+"></a>
   <a href="https://fumadocs.dev/"><img src="https://img.shields.io/badge/FumaDocs-v14%E2%80%93v16%2B-purple" alt="FumaDocs: v14–v16+"></a>
   <a href="https://eslint.org/"><img src="https://img.shields.io/badge/ESLint-v9-4B32C3" alt="ESLint: v9"></a>
   <a href="https://prettier.io/"><img src="https://img.shields.io/badge/code_style-Prettier-ff69b4" alt="Code style: Prettier"></a>
@@ -50,7 +50,7 @@ rustdoc-to-fumadocs converts Rust's `rustdoc` JSON output into [FumaDocs](https:
 │  │  (Zod)      │    │  (Modules)  │    │ (Components)│    │   (MDX)     │  │
 │  └─────────────┘    └─────────────┘    └─────────────┘    └─────────────┘  │
 │                                                                             │
-│  • Format version check (v35-57)    • FumaDocs Callouts, Tabs, Cards       │
+│  • Format version check (v35-60)    • FumaDocs Callouts, Tabs, Cards       │
 │  • Helpful error messages           • YAML frontmatter with icons          │
 │  • Forward-compatible parsing       • meta.json navigation                 │
 └─────────────────────────────────────────────────────────────────────────────┘
@@ -78,6 +78,9 @@ rustdoc-to-fumadocs converts Rust's `rustdoc` JSON output into [FumaDocs](https:
 | --------------------- | -------------------------------------------------------------------------------------- |
 | **FumaDocs v14–v16+** | Full support for icons, separators, Callouts, Tabs, Cards — verified end-to-end on v16 |
 | **Cargo workspaces**  | `--workspace` processes every member into one FumaDocs tree                            |
+| **Complete API**      | `pub use` re-exports followed: items of private modules get pages at their public path |
+| **Linked docs**       | Intra-doc links resolved through rustdoc's link table; every link is absolute          |
+| **Feature gates**     | `#[doc(cfg)]` / `#[cfg]` badges, inherited from modules, with a real `Cargo.toml` line |
 | **Validation**        | Zod schemas with helpful error messages and hints                                      |
 | **Error Handling**    | Structured errors with codes, hints, and recovery context                              |
 | **Components**        | Deprecation, Safety, Panics, Errors, Feature Gate callouts                             |
@@ -88,11 +91,14 @@ rustdoc-to-fumadocs converts Rust's `rustdoc` JSON output into [FumaDocs](https:
 
 ### Rustdoc Format Compatibility
 
-| Format Version | Rust Version | Support                                  |
-| -------------- | ------------ | ---------------------------------------- |
-| 35-55          | 1.76 - 1.84  | Full                                     |
-| 56-57          | 1.85+        | Full (numeric IDs, new attribute format) |
-| > 57           | Future       | Warning + best-effort                    |
+| Format Version | Rust Version            | Support                                                   |
+| -------------- | ----------------------- | --------------------------------------------------------- |
+| 35-55          | 1.76 - 1.84             | Full                                                      |
+| 56-57          | 1.85 - 1.94 (57 tested) | Full (numeric IDs, structured attributes)                 |
+| 58-60          | up to 1.98 (60 tested)  | Full (`stability`, `const_stability`, `default_unstable`) |
+| > 60           | Future                  | Warning + best-effort                                     |
+
+The test suite runs every fixture in both format 57 (Rust 1.94) and format 60 (Rust 1.98).
 
 ---
 
@@ -102,7 +108,7 @@ rustdoc-to-fumadocs converts Rust's `rustdoc` JSON output into [FumaDocs](https:
 
 | Requirement | Version | Notes                       |
 | ----------- | ------- | --------------------------- |
-| **Node.js** | 18+     | 20 recommended              |
+| **Node.js** | 20+     | 20, 22 or 24                |
 | **Rust**    | nightly | For rustdoc JSON generation |
 | **npm**     | 9+      | Comes with Node.js          |
 
@@ -132,7 +138,7 @@ npx tsx src/cli.ts --input /path/to/target/doc/my_crate.json --output content/do
 ### Verify Installation
 
 ```bash
-npm run test:run    # Run 299 tests
+npm run test:run    # Run the test suite
 npm run build       # Compile TypeScript
 ```
 
@@ -150,8 +156,20 @@ OPTIONS:
   -w, --workspace [dir]   Treat <dir> (or cwd) as a Cargo workspace root and
                           generate docs for every [workspace].members entry.
                           Overrides --input/--crate.
+  --target-dir <dir>      Cargo target directory containing doc/<crate>.json
+                          (default: $CARGO_TARGET_DIR, else ./target or
+                          <workspace>/target)
+  --exclude <crates>      Workspace members to skip (comma-separated or
+                          repeated; package or crate names)
+  --include-unpublished   Also document workspace members with
+                          publish = false (skipped by default)
   -o, --output <dir>      Output directory (default: content/docs/api)
-  -b, --base-url <url>    Base URL for docs (default: /docs/api)
+  -b, --base-url <url>    Base URL for docs (default: /docs/api); every
+                          generated link is absolute under it
+  --source-url-base <url> Repository URL for "Source" links and for
+                          repository-relative links in docstrings, e.g.
+                          https://github.com/org/repo
+  --source-ref <ref>      Git ref for source links (adds /blob/<ref>/)
   -g, --group-by <mode>   Group by: module | kind | flat (default: module)
   --no-index              Skip index pages for modules
   --no-tabs               Disable Tabs component for implementations
@@ -180,18 +198,50 @@ rustdoc-to-fumadocs --crate my_crate --json | jq '.stats'
 # Whole Cargo workspace (one output subdir per member crate)
 cargo doc --workspace --no-deps  # with the JSON RUSTDOCFLAGS
 rustdoc-to-fumadocs --workspace --output docs/api
+
+# Shared target dir, skip a member, link items to their source
+CARGO_TARGET_DIR=/tmp/target rustdoc-to-fumadocs --workspace --exclude bench-utils \
+  --source-url-base https://github.com/org/repo --source-ref v1.2.0
 ```
+
+Workspace mode skips members with `publish = false` (xtask-style helpers) unless
+`--include-unpublished` is given, prints format-version warnings per member, and
+builds every member's page index first so re-exports of a sibling crate's items
+link to the sibling's page. The top-level `meta.json` lists each crate as a folder.
 
 ---
 
 ## Generated Output
+
+### What Gets Documented
+
+- **Public API by reachability.** Public items of public modules keep their
+  path. Items defined in private modules and re-exported with `pub use` get a
+  page at the re-export path (under the `use` name for renamed re-exports);
+  re-exported private modules and glob re-exports are inlined; `#[doc(inline)]`
+  is honoured. Re-exports of already documented or external items are listed
+  in a **Re-exports** section with a link.
+- **Links.** Intra-doc links (``[`Foo`]``, `[text](crate::Foo)`,
+  `[`Self::new`]`, reference links) resolve through rustdoc's link table to
+  absolute URLs: local pages, member anchors (`#method.new`,
+  `#variant.Name`), sibling workspace crates, or the external crate's
+  rustdoc pages. Links without a public target keep their text.
+- **Traits and impls.** Associated types and constants, required vs provided
+  methods, implementors, every trait impl (including marker impls like `Copy`)
+  and auto traits. Methods get anchored headings, so they show in the table of
+  contents.
+- **Feature gates.** `#[doc(cfg(...))]` (generate with `--cfg docsrs`) or the
+  item's `#[cfg(...)]`, with `all`/`any`/`not`, inherited from enclosing
+  modules; the callout's `Cargo.toml` line names the real package and version.
+- **Attributes.** `#[non_exhaustive]`, `#[must_use]`, `#[repr]`, deprecation and
+  (format 58+) stability; doctest setup lines (`# use foo;`) are hidden.
 
 ### FumaDocs Components
 
 | Component   | Usage                                              | Example                                                 |
 | ----------- | -------------------------------------------------- | ------------------------------------------------------- |
 | **Callout** | Deprecation, safety, panics, errors, feature gates | `<Callout type="warn">Deprecated since 1.2.0</Callout>` |
-| **Tabs**    | Organize methods vs trait implementations          | `<Tabs items={["Methods", "Traits"]}>`                  |
+| **Tabs**    | Organize methods vs trait implementations          | `<Tabs items={["Methods", "Trait Implementations"]}>`   |
 | **Cards**   | Cross-references in "See Also" sections            | `<Card title="OtherStruct" icon="Box" />`               |
 
 ### Icon Mapping
@@ -205,6 +255,7 @@ rustdoc-to-fumadocs --workspace --output docs/api
 | type alias | Type          |
 | constant   | Hash          |
 | macro      | Wand2         |
+| proc macro | Wand2         |
 | module     | Folder        |
 
 ### Sample Output
@@ -225,8 +276,16 @@ icon: "Box"
 {
   "title": "my_module",
   "icon": "Folder",
-  "defaultOpen": true,
-  "pages": ["index", "---Structs---", "MyStruct", "---Functions---", "my_function"]
+  "defaultOpen": false,
+  "pages": [
+    "index",
+    "---Structs---",
+    "MyStruct",
+    "---Functions---",
+    "my_function",
+    "---Modules---",
+    "submodule"
+  ]
 }
 ```
 
@@ -283,19 +342,25 @@ The generator's output (frontmatter, `meta.json`, separators, Callout/Tabs/Cards
 
 ### mdx-components.tsx
 
-FumaDocs v16 ships `Callout`, `Tabs`, `Tab`, `Cards`, and `Card` in `defaultMdxComponents`, so the wrapper can be minimal:
+Generated pages use `Callout`, `Cards`, `Card`, `Tabs` and `Tab` without importing them. FumaDocs v16's `defaultMdxComponents` provides `Callout`, `Cards` and `Card`, but **not** `Tabs` / `Tab`; register those yourself (or generate with `--no-tabs`):
 
 ```tsx
 import defaultMdxComponents from "fumadocs-ui/mdx";
+import { Tab, Tabs } from "fumadocs-ui/components/tabs";
 import type { MDXComponents } from "mdx/types";
 
 export function getMDXComponents(components?: MDXComponents): MDXComponents {
   return {
     ...defaultMdxComponents,
+    Tabs,
+    Tab,
     ...components,
   };
 }
 ```
+
+Member headings carry FumaDocs custom heading ids (``#### `new` [#method.new]``),
+which the default `remarkHeading` plugin of fumadocs-mdx turns into anchors.
 
 ### source.config.ts
 
@@ -355,9 +420,15 @@ RUSTDOCFLAGS="-Z unstable-options --output-format json" cargo +nightly doc --no-
 
 # Using stable with bootstrap (CI environments)
 RUSTC_BOOTSTRAP=1 RUSTDOCFLAGS="-Z unstable-options --output-format json" cargo doc --no-deps
+
+# With feature badges from #[cfg_attr(docsrs, doc(cfg(...)))]
+RUSTC_BOOTSTRAP=1 RUSTDOCFLAGS="-Z unstable-options --output-format json --cfg docsrs" \
+  cargo doc --no-deps --all-features
 ```
 
-Output: `target/doc/<crate_name>.json`
+Output: `target/doc/<crate_name>.json` (or `$CARGO_TARGET_DIR/doc/`). `--cfg docsrs`
+needs the crate to enable `#![cfg_attr(docsrs, feature(doc_cfg))]`; without it the
+generator falls back to the items' own `#[cfg]` attributes.
 
 ---
 
@@ -385,7 +456,7 @@ Output: `target/doc/<crate_name>.json`
 npm install          # Install dependencies
 npm run build        # Compile TypeScript
 npm run test         # Watch mode
-npm run test:run     # Single run (299 tests)
+npm run test:run     # Single run
 npm run test:coverage # Coverage report
 npm run lint         # ESLint
 npm run format       # Prettier
@@ -548,7 +619,7 @@ The following rustdoc/documentation features are not currently supported:
 | Error Code                   | Meaning                | Fix                                  |
 | ---------------------------- | ---------------------- | ------------------------------------ |
 | `INVALID_JSON`               | File is not valid JSON | Check rustdoc completed successfully |
-| `UNSUPPORTED_FORMAT_VERSION` | Format outside v35-57  | Update Rust or this tool             |
+| `UNSUPPORTED_FORMAT_VERSION` | Format outside v35-60  | Update Rust or this tool             |
 | `MISSING_ROOT_MODULE`        | Root module not found  | Verify rustdoc output is complete    |
 | `UNRESOLVED_TYPE`            | Type reference missing | External crate type - expected       |
 

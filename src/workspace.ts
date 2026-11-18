@@ -21,6 +21,12 @@ export interface WorkspaceMember {
   name: string;
   /** Absolute path to the member's directory (which contains its Cargo.toml). */
   path: string;
+  /**
+   * False when the package cannot be published (`publish = false` or
+   * `publish = []`, directly or through `publish.workspace = true`).
+   * Workspace mode skips such members (xtask, test harnesses) by default.
+   */
+  publish?: boolean;
 }
 
 /**
@@ -84,12 +90,24 @@ async function expandMemberPattern(rootDir: string, pattern: string): Promise<st
   return matches;
 }
 
+/** Whether a `publish` value allows publishing (`false` and `[]` do not). */
+function publishable(value: unknown): boolean | undefined {
+  if (value === false) return false;
+  if (value === true) return true;
+  if (Array.isArray(value)) return value.length > 0;
+  return undefined;
+}
+
 /**
- * Read a member's own `Cargo.toml` to recover its `package.name`. Cargo
- * requires this to be globally unique within the workspace, so it's the right
- * key to use for output directory naming and cross-crate lookups.
+ * Read a member's own `Cargo.toml` to recover its `package.name` and
+ * whether it is publishable. Cargo requires the name to be unique within
+ * the workspace, so it's the right key for output directory naming and
+ * cross-crate lookups.
  */
-async function readMemberName(memberDir: string): Promise<string | null> {
+async function readMember(
+  memberDir: string,
+  workspacePublish: boolean | undefined
+): Promise<{ name: string; publish: boolean } | null> {
   const tomlPath = join(memberDir, "Cargo.toml");
   let content: string;
   try {
@@ -107,8 +125,14 @@ async function readMemberName(memberDir: string): Promise<string | null> {
   if (typeof parsed !== "object" || parsed === null) return null;
   const pkg = (parsed as Record<string, unknown>).package;
   if (typeof pkg !== "object" || pkg === null) return null;
-  const name = (pkg as Record<string, unknown>).name;
-  return typeof name === "string" ? name : null;
+  const pkgRec = pkg as Record<string, unknown>;
+  const name = pkgRec.name;
+  if (typeof name !== "string") return null;
+  const raw = pkgRec.publish;
+  const inherited =
+    typeof raw === "object" && raw !== null && !Array.isArray(raw) && "workspace" in raw;
+  const publish = (inherited ? workspacePublish : publishable(raw)) ?? true;
+  return { name, publish };
 }
 
 /**
@@ -166,6 +190,11 @@ export async function loadWorkspace(workspaceTomlPath: string): Promise<Workspac
   }
   const wkRec = wk as Record<string, unknown>;
   const memberPatterns = tomlStringArray(wkRec.members);
+  const wsPackage = wkRec.package;
+  const workspacePublish =
+    typeof wsPackage === "object" && wsPackage !== null
+      ? publishable((wsPackage as Record<string, unknown>).publish)
+      : undefined;
   const excludePatterns = new Set(tomlStringArray(wkRec.exclude));
 
   const rootDir = resolve(workspaceTomlPath, "..");
@@ -190,9 +219,9 @@ export async function loadWorkspace(workspaceTomlPath: string): Promise<Workspac
   for (const memberDir of expanded) {
     if (seen.has(memberDir)) continue;
     seen.add(memberDir);
-    const name = await readMemberName(memberDir);
-    if (!name) continue;
-    members.push({ name, path: memberDir });
+    const member = await readMember(memberDir, workspacePublish);
+    if (!member) continue;
+    members.push({ name: member.name, path: memberDir, publish: member.publish });
   }
 
   return { rootDir, members };
@@ -222,7 +251,7 @@ export async function findMemberRustdocJson(
 
 /**
  * Render the top-level workspace `meta.json` that lists every member as a
- * collapsible section in the sidebar.
+ * collapsible folder in the sidebar (each crate keeps its own meta.json).
  */
 export function renderWorkspaceMeta(members: WorkspaceMember[], title = "API"): string {
   return (
@@ -230,7 +259,7 @@ export function renderWorkspaceMeta(members: WorkspaceMember[], title = "API"): 
       {
         title,
         defaultOpen: true,
-        pages: ["index", ...members.map((m) => `...${m.name}`)],
+        pages: ["index", ...members.map((m) => m.name)],
       },
       null,
       2
@@ -248,11 +277,16 @@ function escapeCode(name: string): string {
 }
 
 /**
- * Render the top-level workspace landing page. The frontmatter is written
+ * Render the top-level workspace landing page. Links to the member crates
+ * are absolute (`baseUrl` + crate directory). The frontmatter is written
  * by the `yaml` package, so workspace/crate names containing `"`, `:`,
  * newlines, or other YAML metacharacters can't break parsing.
  */
-export function renderWorkspaceIndex(workspaceName: string, members: WorkspaceMember[]): string {
+export function renderWorkspaceIndex(
+  workspaceName: string,
+  members: WorkspaceMember[],
+  baseUrl = "/docs/api"
+): string {
   const frontmatter = stringifyYaml(
     {
       title: workspaceName,
@@ -271,8 +305,9 @@ export function renderWorkspaceIndex(workspaceName: string, members: WorkspaceMe
     `This workspace contains **${members.length}** crate${members.length === 1 ? "" : "s"}:`,
     "",
   ];
+  const base = baseUrl.replace(/\/+$/, "");
   for (const m of members) {
-    lines.push(`- [\`${escapeCode(m.name)}\`](./${encodeURIComponent(m.name)})`);
+    lines.push(`- [\`${escapeCode(m.name)}\`](${base}/${encodeURIComponent(m.name)})`);
   }
   lines.push("");
   return lines.join("\n");

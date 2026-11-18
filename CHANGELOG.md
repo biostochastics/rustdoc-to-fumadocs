@@ -6,16 +6,85 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-17
+
+API completeness release: the generated reference now covers the whole public
+API of a crate, links resolve, and every page compiles as MDX without
+post-processing. Verified on the fluxid workspace (rustdoc JSON formats 57 and 60).
+
+### Fixed
+
+- **Re-exports were dropped.** `pub use` items (nameless in rustdoc JSON) were
+  skipped, so items defined in private modules had no page. A reachability plan
+  now places directly reachable items at their path, inlines items and modules
+  re-exported from private modules (and `#[doc(inline)]` re-exports) at the
+  re-export path under the `use` name, applies glob re-exports per child, and
+  lists re-exports of documented or external items in a **Re-exports** section.
+- **Field types broke MDX.** Struct, union and variant field types are inline
+  code (`Option<String>`, `Vec<[u8; 32]>` parsed as JSX before).
+- **Links.** `baseUrl` was unused: module indexes linked `./Item`, cards linked
+  the defining path with a doubled module segment, the workspace page linked
+  `./crate`. All links are now absolute. Intra-doc links (shortcut, reference,
+  inline, definitions) resolve through `item.links` to pages, member anchors,
+  sibling workspace crates or external rustdoc; unresolvable ones keep their text.
+- **Sync path.** `--target-dir` / `$CARGO_TARGET_DIR` are honoured (the target
+  was hard-coded); the CLI no longer silently does nothing when started through
+  an npm bin symlink; format-version warnings are printed in workspace mode.
+- **Signatures.** Synthetic `impl Trait` generic params are hidden;
+  `<Self as ?>::Output` renders as `Self::Output`; supertraits and trait where
+  clauses are printed; `crate::` is stripped like `$crate::`; trait bounds keep
+  associated-type constraints (`Iterator<Item = u8>`).
+- **Feature gates.** `not(feature = ...)` was reported as a requirement and the
+  `Cargo.toml` snippet said `crate_name`.
+- **Sidebar.** Private modules (bin crates document them) no longer reach
+  `meta.json`; derive and attribute macros are listed and rendered.
+- **Callouts.** `# Panics` / `# Errors` / `# Safety` sections shown as callouts
+  are no longer repeated in the body; deprecation titles and notes are escaped.
+
 ### Added
+
+- **Feature-gate badges** from `#[doc(cfg(...))]` (with `--cfg docsrs`),
+  `#[cfg(...)]` and rustc's `CfgTrace` attributes, with `all` / `any` / `not`,
+  inherited from enclosing modules and re-exporting `use` items; impl blocks
+  gated beyond their type say so. The snippet names the real package and version.
+- **Trait pages**: associated types and constants, required vs provided methods,
+  implementors. **Type pages**: every non-blanket trait impl (marker impls such
+  as `Copy` included), trait-impl associated items, an auto-trait line.
+- **Anchored member headings** (`#method.new`, `#variant.Name`, ...) so methods
+  appear in the table of contents and links can target them; docstring headings
+  are demoted to nest under the item.
+- **Attribute badges** (`#[non_exhaustive]`, `#[must_use]`, `#[repr]`) in
+  signatures, stability badges (format 58+), deprecation on members.
+- **Source links**: `--source-url-base <url>` and `--source-ref <ref>` link items,
+  members and modules to their source lines, and resolve repository-relative
+  links in docstrings (dropped to text otherwise, since they would 404).
+- **Workspace options**: `--exclude <crates>`; members with `publish = false`
+  are skipped unless `--include-unpublished`; each crate is a folder in the
+  top-level `meta.json`; cross-crate links between members stay on the site
+  (`RustdocGenerator#pageIndex()` / `setExternalPages()`).
+- **Doctests**: hidden `# ` lines are dropped (`##` unescapes); bare and
+  `rust,ignore`-style fences are tagged `rust`.
+- **Rustdoc JSON format 58-60** (Rust 1.98) supported; unknown item fields are
+  passed through instead of stripped.
+- **Test fixtures** generated from real crates in formats 57 and 60
+  (`scripts/gen-fixtures.sh`), a link checker (`tests/helpers/check-output.ts`)
+  and an MDX compile test over every generated page.
+
+### Changed
+
+- **Node.js 20+** (`engines.node`); CI tests Node 20, 22 and 24.
+- New module `src/docs.ts` (link rewriting, heading demotion, section
+  extraction) and `src/cfg.ts` (cfg parsing); `renderCfgCallout` and
+  `formatGenericArgs` are exported.
+
+### Added before 0.4.0 work (previously unreleased)
 
 - **MDX-safe docstring sanitization**: new `sanitizeDocstring()` export runs at generator construction time against every `item.docs`, struct/union field `docs`, and enum variant `docs`. Two passes, code-fence aware:
   1. Outside fenced code blocks, escapes patterns MDX would mistake for JSX: URL autolinks (`<https://…>`, `<mailto:…>`), Rust generic placeholders in prose (`Opaque<T>`, `Sealed<K, V>`), metasyntactic `<word>` (e.g. `<encoding>`), and `<` before a digit. Inline `` ` … ` `` spans and a conservative whitelist of safe inline HTML tags (`<kbd>`, `<sub>`, `<br>`, …) are preserved. JSX tags with attributes (`<Tab value="…">`) pass through untouched.
   2. Rewrites rustdoc doctest-directive fence langs (`compile_fail`, `ignore`, `no_run`, `should_panic`, `edition20{15,18,21,24}`) to `rust` with the directive preserved as a `title="…"` attribute so the intent stays visible and Shiki can resolve the lang.
      Idempotent. Ported from a downstream sync pipeline so every consumer benefits without reimplementing the filters.
 
-### Tests
-
-- 14 new unit tests for `sanitizeDocstring` covering plain prose, autolinks, generics, fenced blocks, doctest-directive rewrites, safe-tag preservation, JSX pass-through, and idempotency. Total: 299 tests.
+- 14 unit tests for `sanitizeDocstring` covering plain prose, autolinks, generics, fenced blocks, doctest-directive rewrites, safe-tag preservation, JSX pass-through, and idempotency.
 
 ## [0.3.1] - 2026-04-20
 

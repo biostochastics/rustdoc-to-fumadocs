@@ -18,7 +18,7 @@
 import type { RustdocCrate, Item, Id } from "../types.js";
 
 // Re-export type formatting utilities
-export { formatType, formatGenericArg, formatGenericBound } from "./types.js";
+export { formatType, formatGenericArg, formatGenericArgs, formatGenericBound } from "./types.js";
 
 // Re-export signature formatting utilities
 export {
@@ -42,6 +42,7 @@ export {
   renderDangerNotice,
   renderSafetyCallout,
   renderFeatureGateCallout,
+  renderCfgCallout,
   renderPanicsCallout,
   renderErrorsCallout,
   extractDocSection,

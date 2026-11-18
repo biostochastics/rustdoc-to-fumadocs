@@ -8,8 +8,9 @@
  */
 
 import { readFile, writeFile, mkdir, stat, access } from "node:fs/promises";
-import { dirname, resolve, sep } from "node:path";
-import { pathToFileURL } from "node:url";
+import { realpathSync } from "node:fs";
+import { dirname, resolve, sep, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { RustdocGenerator, type GeneratorOptions } from "./generator.js";
 import { validateRustdocJson, parseJsonSafe } from "./validation.js";
 import {
@@ -85,6 +86,19 @@ export interface CliArgs {
    * mode.
    */
   workspace?: string;
+  /**
+   * Cargo target directory holding `doc/<crate>.json`. Defaults to
+   * `$CARGO_TARGET_DIR`, then `<workspace>/target` (or `./target`).
+   */
+  targetDir?: string;
+  /** Source repository URL for "Source" links (see GeneratorOptions.sourceUrlBase). */
+  sourceUrlBase?: string;
+  /** Git ref for source links (see GeneratorOptions.sourceRef). */
+  sourceRef?: string;
+  /** Workspace members to leave out (package or crate names). */
+  exclude: string[];
+  /** Also document workspace members with `publish = false`. */
+  includeUnpublished: boolean;
   output: string;
   baseUrl: string;
   groupBy: "module" | "kind" | "flat";
@@ -156,6 +170,8 @@ export function parseArgs(argv: string[]): CliArgs {
     json: false,
     verbose: false,
     help: false,
+    exclude: [],
+    includeUnpublished: false,
   };
 
   const requireValue = (flag: string, next: string | undefined, label: string): string => {
@@ -219,6 +235,26 @@ export function parseArgs(argv: string[]): CliArgs {
       case "--json":
         result.json = true;
         break;
+      case "--target-dir":
+        result.targetDir = requireValue(arg, argv[++i], "a directory argument");
+        break;
+      case "--source-url-base":
+        result.sourceUrlBase = requireValue(arg, argv[++i], "a URL argument");
+        break;
+      case "--source-ref":
+        result.sourceRef = requireValue(arg, argv[++i], "a git ref argument");
+        break;
+      case "--exclude":
+        result.exclude.push(
+          ...requireValue(arg, argv[++i], "a crate name argument")
+            .split(",")
+            .map((n) => n.trim())
+            .filter(Boolean)
+        );
+        break;
+      case "--include-unpublished":
+        result.includeUnpublished = true;
+        break;
       case "-w":
       case "--workspace": {
         // Accept an optional directory argument. If the next token is another
@@ -256,8 +292,19 @@ OPTIONS:
   -w, --workspace [dir]   Treat <dir> (or cwd) as a Cargo workspace root and
                           generate docs for every [workspace].members entry.
                           Overrides --input/--crate.
+  --target-dir <dir>      Cargo target directory containing doc/<crate>.json
+                          (default: $CARGO_TARGET_DIR, else ./target or
+                          <workspace>/target)
+  --exclude <crates>      Workspace members to skip (comma-separated or
+                          repeated; package or crate names)
+  --include-unpublished   Also document workspace members with
+                          publish = false (skipped by default)
   -o, --output <dir>      Output directory (default: content/docs/api)
   -b, --base-url <url>    Base URL for generated docs (default: /docs/api)
+  --source-url-base <url> Repository URL for "Source" links and for
+                          repository-relative links in docstrings, e.g.
+                          https://github.com/org/repo
+  --source-ref <ref>      Git ref for source links (adds /blob/<ref>/)
   -g, --group-by <mode>   Group items by: module, kind, or flat (default: module)
   --no-index              Don't generate index pages for modules
   --no-tabs               Don't use Tabs component for implementations
@@ -297,10 +344,11 @@ GENERATING RUSTDOC JSON:
   # Using stable with bootstrap:
   RUSTC_BOOTSTRAP=1 RUSTDOCFLAGS="-Z unstable-options --output-format json" cargo doc --no-deps
 
-  The JSON file will be in target/doc/<crate_name>.json
+  The JSON file will be in target/doc/<crate_name>.json (or under
+  $CARGO_TARGET_DIR / --target-dir when set)
 
 SUPPORTED FORMATS:
-  This tool supports rustdoc JSON format versions 35-57 (Rust 1.76+).
+  This tool supports rustdoc JSON format versions 35-60 (Rust 1.76-1.98).
   Newer versions may work but could have unsupported features.
 `;
 }
@@ -314,10 +362,22 @@ async function pathExists(path: string): Promise<boolean> {
   }
 }
 
-async function findRustdocJson(crateName: string): Promise<string | null> {
+/**
+ * The Cargo target directory to read rustdoc JSON from: `--target-dir`, then
+ * `$CARGO_TARGET_DIR` (both relative to the current directory, as Cargo
+ * resolves them), then `<root>/target`.
+ */
+export function resolveTargetDir(flag: string | undefined, root: string): string {
+  if (flag) return resolve(flag);
+  const env = process.env.CARGO_TARGET_DIR;
+  if (env) return resolve(env);
+  return resolve(root, "target");
+}
+
+async function findRustdocJson(crateName: string, targetDir: string): Promise<string | null> {
   const possiblePaths = [
-    `target/doc/${crateName}.json`,
-    `target/doc/${crateName.replace(/-/g, "_")}.json`,
+    join(targetDir, "doc", `${crateName}.json`),
+    join(targetDir, "doc", `${crateName.replace(/-/g, "_")}.json`),
   ];
 
   for (const p of possiblePaths) {
@@ -392,7 +452,6 @@ async function writeFilesParallel(
  */
 async function loadRustdocJsonWithWarnings(
   path: string,
-  verbose: boolean,
   streams: CliStreams
 ): Promise<{ crate: ReturnType<typeof validateRustdocJson>["crate"]; warnings: string[] }> {
   let content: string;
@@ -405,10 +464,10 @@ async function loadRustdocJsonWithWarnings(
   const data = parseJsonSafe(content, path);
   const { crate, warnings } = validateRustdocJson(data);
 
-  if (verbose && warnings.length > 0) {
-    for (const warning of warnings) {
-      streams.stderr(`Warning: ${warning}\n`);
-    }
+  // Always surface validation warnings (e.g. an unknown, newer format
+  // version): output may be incomplete and the user needs to know why.
+  for (const warning of warnings) {
+    streams.stderr(`Warning: ${warning}\n`);
   }
 
   return { crate, warnings };
@@ -450,22 +509,38 @@ async function runWorkspace(
     );
   }
 
+  const norm = (n: string): string => n.replace(/-/g, "_");
+  const excluded = new Set(args.exclude.map(norm));
+  const members = ws.members.filter((m) => {
+    if (excluded.has(norm(m.name))) {
+      log(`  ${m.name}: excluded (--exclude)`);
+      return false;
+    }
+    if (m.publish === false && !args.includeUnpublished) {
+      log(`  ${m.name}: skipped (publish = false; pass --include-unpublished to document it)`);
+      return false;
+    }
+    return true;
+  });
+
   log(
-    `Workspace: ${ws.rootDir} (${ws.members.length} member${ws.members.length === 1 ? "" : "s"})`
+    `Workspace: ${ws.rootDir} (${members.length} member${members.length === 1 ? "" : "s"} to document)`
   );
 
-  const targetDir = resolve(ws.rootDir, "target");
+  const targetDir = resolveTargetDir(args.targetDir, ws.rootDir);
   const outputDir = resolve(args.output);
   const allFiles: { path: string; content: string }[] = [];
   const generated: WorkspaceMember[] = [];
+  const generators: { generator: RustdocGenerator; member: WorkspaceMember; rootName: string }[] =
+    [];
   const skipped: { name: string; reason: string }[] = [];
 
-  for (const member of ws.members) {
+  for (const member of members) {
     const jsonPath = await findMemberRustdocJson(member.name, targetDir);
     if (!jsonPath) {
       skipped.push({
         name: member.name,
-        reason: `no rustdoc JSON at target/doc/${member.name}.json`,
+        reason: `no rustdoc JSON at ${join(targetDir, "doc", `${member.name.replace(/-/g, "_")}.json`)}`,
       });
       continue;
     }
@@ -509,7 +584,11 @@ async function runWorkspace(
     }
     let crate;
     try {
-      crate = validateRustdocJson(parsed).crate;
+      const validated = validateRustdocJson(parsed);
+      crate = validated.crate;
+      for (const warning of validated.warnings) {
+        streams.stderr(`Warning: ${member.name}: ${warning}\n`);
+      }
     } catch (err) {
       skipped.push({
         name: member.name,
@@ -525,14 +604,28 @@ async function runWorkspace(
       groupBy: args.groupBy,
       useTabs: !args.noTabs,
       useCards: !args.noCards,
+      sourceUrlBase: args.sourceUrlBase,
+      sourceRef: args.sourceRef,
+      packageName: member.name,
     };
-    const generator = new RustdocGenerator(crate, options);
-    const files = generator.generate();
-    allFiles.push(...files);
     // Record the crate's own root name (underscored, matching the output
     // directory the generator emits) rather than the Cargo package name,
     // so the top-level meta.json references the actual on-disk dirs.
     const rootName = crate.index[crate.root]?.name ?? member.name;
+    generators.push({ generator: new RustdocGenerator(crate, options), member, rootName });
+  }
+
+  // Two phases so cross-crate links stay on the site: every member's page
+  // index first, then each member renders against the union of them.
+  const sharedPages = new Map<string, string>();
+  for (const { generator } of generators) {
+    for (const [path, url] of generator.pageIndex()) {
+      if (!sharedPages.has(path)) sharedPages.set(path, url);
+    }
+  }
+  for (const { generator, member, rootName } of generators) {
+    generator.setExternalPages(sharedPages);
+    allFiles.push(...generator.generate());
     generated.push({ ...member, name: rootName });
   }
 
@@ -540,7 +633,7 @@ async function runWorkspace(
     return emitError(
       new RustdocError(
         ErrorCode.INPUT_READ_FAILED,
-        `No workspace members produced output. All ${ws.members.length} members were skipped.`,
+        `No workspace members produced output. All ${members.length} members were skipped.`,
         {
           hint: 'Run `cargo doc` with the JSON rustdoc flags before invoking --workspace. Example:\n  RUSTC_BOOTSTRAP=1 RUSTDOCFLAGS="-Z unstable-options --output-format json" cargo doc --workspace --no-deps',
           context: { skipped },
@@ -559,7 +652,7 @@ async function runWorkspace(
   });
   allFiles.push({
     path: "index.mdx",
-    content: renderWorkspaceIndex(workspaceName, generated),
+    content: renderWorkspaceIndex(workspaceName, generated, args.baseUrl),
   });
 
   for (const s of skipped) {
@@ -680,7 +773,7 @@ export async function run(argv: string[], streams: CliStreams = defaultStreams):
   if (args.input) {
     inputPath = resolve(args.input);
   } else if (args.crate) {
-    inputPath = await findRustdocJson(args.crate);
+    inputPath = await findRustdocJson(args.crate, resolveTargetDir(args.targetDir, "."));
     if (!inputPath) {
       const error = new RustdocError(
         ErrorCode.INPUT_READ_FAILED,
@@ -690,8 +783,8 @@ export async function run(argv: string[], streams: CliStreams = defaultStreams):
             "Make sure you've generated rustdoc JSON first:\n" +
             '  RUSTDOCFLAGS="-Z unstable-options --output-format json" cargo +nightly doc --no-deps\n\n' +
             `Looked in:\n` +
-            `  - target/doc/${args.crate}.json\n` +
-            `  - target/doc/${args.crate.replace(/-/g, "_")}.json`,
+            `  - ${join(resolveTargetDir(args.targetDir, "."), "doc", `${args.crate}.json`)}\n` +
+            `  - ${join(resolveTargetDir(args.targetDir, "."), "doc", `${args.crate.replace(/-/g, "_")}.json`)}`,
           context: { crate: args.crate },
         }
       );
@@ -708,7 +801,7 @@ export async function run(argv: string[], streams: CliStreams = defaultStreams):
         const nameMatch = /^name\s*=\s*["']([^"']+)["']/m.exec(cargoToml);
         if (nameMatch) {
           const crateName = nameMatch[1];
-          inputPath = await findRustdocJson(crateName);
+          inputPath = await findRustdocJson(crateName, resolveTargetDir(args.targetDir, "."));
           if (inputPath && args.verbose) {
             streams.stdout(`Auto-detected crate: ${crateName}\n`);
           }
@@ -775,7 +868,7 @@ export async function run(argv: string[], streams: CliStreams = defaultStreams):
   let crate;
 
   try {
-    const result = await loadRustdocJsonWithWarnings(inputPath, args.verbose, streams);
+    const result = await loadRustdocJsonWithWarnings(inputPath, streams);
     crate = result.crate;
     validationWarnings = result.warnings;
   } catch (err) {
@@ -793,6 +886,8 @@ export async function run(argv: string[], streams: CliStreams = defaultStreams):
     groupBy: args.groupBy,
     useTabs: !args.noTabs,
     useCards: !args.noCards,
+    sourceUrlBase: args.sourceUrlBase,
+    sourceRef: args.sourceRef,
   };
 
   const generator = new RustdocGenerator(crate, options);
@@ -922,11 +1017,26 @@ function emitError(err: unknown, args: CliArgs, streams: CliStreams): number {
   return 1;
 }
 
-// Run when invoked directly (not when imported by tests).
-const invokedDirectly =
-  typeof process.argv[1] === "string" && import.meta.url === pathToFileURL(process.argv[1]).href;
+/**
+ * True when `argv1` (the script node was started with) is this module. Both
+ * sides are resolved through symlinks: npm and npx start the CLI through a
+ * `node_modules/.bin` symlink, and comparing the raw paths made the CLI a
+ * silent no-op there.
+ */
+export function isDirectInvocation(argv1: string | undefined, moduleUrl: string): boolean {
+  if (typeof argv1 !== "string" || argv1.length === 0) return false;
+  const real = (p: string): string => {
+    try {
+      return realpathSync(p);
+    } catch {
+      return resolve(p);
+    }
+  };
+  return real(argv1) === real(fileURLToPath(moduleUrl));
+}
 
-if (invokedDirectly) {
+// Run when invoked directly (not when imported by tests).
+if (isDirectInvocation(process.argv[1], import.meta.url)) {
   run(process.argv.slice(2)).then(
     (code) => process.exit(code),
     (err) => {

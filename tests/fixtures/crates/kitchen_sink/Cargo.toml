@@ -1,0 +1,16 @@
+[package]
+name = "kitchen-sink"
+version = "0.2.0"
+edition = "2021"
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[features]
+default = []
+extra = []
+fancy = []
+nope = []
+
+[workspace]

@@ -17,7 +17,7 @@
  */
 
 import { getPathName } from "../types.js";
-import type { Type, GenericArg, GenericBound, GenericParamDef } from "../types.js";
+import type { Type, GenericArg, GenericArgs, GenericBound, GenericParamDef } from "../types.js";
 
 /**
  * Format a Type as a human-readable string.
@@ -37,47 +37,7 @@ export function formatType(type: Type): string {
   if (type === null || type === undefined) return "_";
   if ("resolved_path" in type) {
     const path = type.resolved_path;
-    let result = getPathName(path);
-    // Render generic arguments
-    if (path.args) {
-      if ("angle_bracketed" in path.args) {
-        const angleBracketed = path.args.angle_bracketed;
-        const args = angleBracketed.args;
-        const constraints = angleBracketed.constraints ?? [];
-
-        // Format type arguments (e.g., Vec<String>, Result<T, E>)
-        const formattedArgs = args.map((arg) => formatGenericArg(arg));
-
-        // Format associated type constraints (e.g., Iterator<Item = T>)
-        const formattedConstraints = constraints.map((c) => {
-          if ("equality" in c.binding) {
-            const term = c.binding.equality;
-            if ("type" in term) {
-              return `${c.name} = ${formatType(term.type)}`;
-            }
-            if ("constant" in term) {
-              const constVal = term.constant;
-              return `${c.name} = ${constVal.const?.expr ?? "..."}`;
-            }
-          }
-          return c.name;
-        });
-
-        const allArgs = [...formattedArgs, ...formattedConstraints];
-        if (allArgs.length > 0) {
-          result += `<${allArgs.join(", ")}>`;
-        }
-      } else if ("parenthesized" in path.args) {
-        // Handle Fn traits: Fn(A, B) -> C
-        const paren = path.args.parenthesized;
-        const inputs = paren.inputs.map((t) => formatType(t)).join(", ");
-        result += `(${inputs})`;
-        if (paren.output) {
-          result += ` -> ${formatType(paren.output)}`;
-        }
-      }
-    }
-    return result;
+    return getPathName(path) + formatGenericArgs(path.args);
   }
   if ("generic" in type) {
     return type.generic;
@@ -168,13 +128,55 @@ export function formatType(type: Type): string {
   }
   if ("qualified_path" in type) {
     const qp = type.qualified_path;
-    const traitName = qp.trait ? getPathName(qp.trait) : "?";
-    return `<${formatType(qp.self_type)} as ${traitName}>::${qp.name}`;
+    const args = formatGenericArgs(qp.args);
+    // `Self::Assoc` / `T::Assoc` written without a trait: rustdoc leaves
+    // `trait` empty, or (format 57+) sets it to a path whose name is "".
+    // Render it the way it was written.
+    if (!qp.trait || getPathName(qp.trait) === "?") {
+      return `${formatType(qp.self_type)}::${qp.name}${args}`;
+    }
+    const traitName = getPathName(qp.trait) + formatGenericArgs(qp.trait.args);
+    return `<${formatType(qp.self_type)} as ${traitName}>::${qp.name}${args}`;
   }
   if ("infer" in type) {
     return "_";
   }
   return "...";
+}
+
+/**
+ * Format the generic arguments of a path: `<T, Item = U>` for
+ * angle-bracketed args (associated-type equality and bound constraints
+ * included), `(A, B) -> C` for the parenthesized `Fn` sugar, "" for none.
+ */
+export function formatGenericArgs(args: GenericArgs | undefined | null): string {
+  if (!args) return "";
+  if ("angle_bracketed" in args) {
+    const ab = args.angle_bracketed;
+    const formatted = [
+      ...ab.args.map((arg) => formatGenericArg(arg)),
+      ...(ab.constraints ?? []).map((c) => {
+        const name = c.name + formatGenericArgs(c.args);
+        if ("equality" in c.binding) {
+          const term = c.binding.equality;
+          if ("type" in term) return `${name} = ${formatType(term.type)}`;
+          if ("constant" in term) return `${name} = ${term.constant.const?.expr ?? "..."}`;
+        }
+        if ("constraint" in c.binding) {
+          const bounds = c.binding.constraint.map((b) => formatGenericBound(b)).filter(Boolean);
+          return bounds.length > 0 ? `${name}: ${bounds.join(" + ")}` : name;
+        }
+        return name;
+      }),
+    ];
+    return formatted.length > 0 ? `<${formatted.join(", ")}>` : "";
+  }
+  if ("parenthesized" in args) {
+    const paren = args.parenthesized;
+    const inputs = paren.inputs.map((t) => formatType(t)).join(", ");
+    return `(${inputs})${paren.output ? ` -> ${formatType(paren.output)}` : ""}`;
+  }
+  return "";
 }
 
 /**
@@ -225,18 +227,9 @@ export function formatGenericBound(bound: GenericBound): string {
     const modifierPrefix =
       tb.modifier === "maybe" ? "?" : tb.modifier === "maybe_const" ? "~const " : "";
     const hrtb = formatHrtb(tb.generic_params);
-    let name = getPathName(tb.trait);
-    // Preserve angle-bracketed generic args on the trait, e.g.
-    // `AsRef<str>` or `Iterator<Item = u32>`.
-    if (tb.trait.args && "angle_bracketed" in tb.trait.args) {
-      const args = tb.trait.args.angle_bracketed.args;
-      const constraints = tb.trait.args.angle_bracketed.constraints ?? [];
-      const formatted = [
-        ...args.map((a) => formatGenericArg(a)),
-        ...constraints.map((c) => c.name),
-      ];
-      if (formatted.length > 0) name += `<${formatted.join(", ")}>`;
-    }
+    // Keep the trait's generic args, e.g. `AsRef<str>`, `Iterator<Item = u32>`
+    // or the `Fn(&str) -> usize` sugar.
+    const name = getPathName(tb.trait) + formatGenericArgs(tb.trait.args);
     return `${hrtb}${modifierPrefix}${name}`;
   }
   if ("outlives" in bound) {

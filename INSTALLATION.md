@@ -6,7 +6,7 @@ This guide covers all methods for installing and setting up `rustdoc-to-fumadocs
 
 ### Node.js Requirements
 
-- **Node.js**: Version 18.0 or higher
+- **Node.js**: Version 20.0 or higher (20, 22 or 24)
 - **Package Manager**: npm, yarn, or pnpm
 - **TypeScript Support**: The tool is written in TypeScript and requires compilation before use
 
