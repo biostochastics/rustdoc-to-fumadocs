@@ -396,7 +396,7 @@ describe("run() - --workspace mode", () => {
     // Meta should reference the crate's root name, not the Cargo package name.
     expect(topMeta.pages).toContain("...test_crate");
     const indexContent = await readFile(join(outDir, "index.mdx"), "utf-8");
-    expect(indexContent).toContain("[`test_crate`](./test_crate)");
+    expect(indexContent).toContain("[`test_crate`](/docs/api/test_crate)");
     expect(indexContent).toContain("1 crate");
   });
 

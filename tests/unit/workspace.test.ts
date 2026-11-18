@@ -147,7 +147,12 @@ describe("renderWorkspaceIndex", () => {
     ];
     const index = renderWorkspaceIndex("wstest", members);
     expect(index).toContain("wstest");
-    expect(index).toContain("[`alpha`](./alpha)");
-    expect(index).toContain("[`beta`](./beta)");
+    expect(index).toContain("[`alpha`](/docs/api/alpha)");
+    expect(index).toContain("[`beta`](/docs/api/beta)");
+  });
+
+  it("links members under a custom base URL", () => {
+    const index = renderWorkspaceIndex("ws", [{ name: "alpha", path: "/x/alpha" }], "/api/");
+    expect(index).toContain("[`alpha`](/api/alpha)");
   });
 });

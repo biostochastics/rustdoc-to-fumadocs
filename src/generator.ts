@@ -17,6 +17,7 @@
  * ```
  */
 
+import { posix } from "node:path";
 import { stringify } from "yaml";
 import type {
   RustdocCrate,
@@ -32,6 +33,7 @@ import type {
 } from "./types.js";
 import { getItemKind, isPlainStruct, getPathName } from "./types.js";
 import { RustdocError, ErrorCode } from "./errors.js";
+import { rewriteDocLinks, demoteHeadings, summaryLine } from "./docs.js";
 
 /**
  * Maximum recursion depth for module processing.
@@ -94,7 +96,10 @@ interface ReexportEntry {
   name: string;
   source: string;
   isGlob: boolean;
+  /** Resolved link for local targets; external targets resolve at render time. */
   href: string | null;
+  /** Target id of an external re-export, resolved when the index renders. */
+  targetId?: Id;
   docs?: string;
   kind?: string;
 }
@@ -523,11 +528,34 @@ export interface GeneratorOptions {
    * pointing at docs.rs.
    */
   externalPages?: Map<string, string>;
+  /**
+   * Base URL of the source repository (e.g.
+   * `https://github.com/org/repo`). Enables "Source" links built from item
+   * spans, and resolves repository-relative links in docstrings
+   * (`../../docs/spec.md`) against the item's source file. Without it such
+   * links are rendered as plain text, since they would 404 on the site.
+   */
+  sourceUrlBase?: string;
+  /**
+   * Git ref (branch, tag or commit) for source links. With a ref, links are
+   * `<sourceUrlBase>/blob/<ref>/<file>`; without one, `<sourceUrlBase>/<file>`
+   * (so a base that already ends in `/blob/<ref>` works too).
+   */
+  sourceRef?: string;
+  /**
+   * Package name used in the `Cargo.toml` snippet of feature-gate callouts
+   * (defaults to the crate name). Workspace mode passes the member's
+   * `package.name`.
+   */
+  packageName?: string;
 }
 
+/** Options that stay optional after defaults have been applied. */
+type OptionalKeys = "externalPages" | "sourceUrlBase" | "sourceRef" | "packageName";
+
 /** Options after defaults have been applied. */
-type ResolvedOptions = Required<Omit<GeneratorOptions, "externalPages">> &
-  Pick<GeneratorOptions, "externalPages">;
+type ResolvedOptions = Required<Omit<GeneratorOptions, OptionalKeys>> &
+  Pick<GeneratorOptions, OptionalKeys>;
 
 /**
  * Represents a generated file with its path and content.
@@ -551,6 +579,12 @@ export class RustdocGenerator {
   private plan: ModuleNode | undefined;
   /** Item id → canonical absolute URL (pages and modules). */
   private itemUrls = new Map<string, string>();
+  /** Member id (method, variant, field, …) → URL with anchor. */
+  private memberUrls = new Map<string, string>();
+  /** Processed docstrings by `id:demote`. */
+  private docsCache = new Map<string, string>();
+  /** Member heading ids by owning item id. */
+  private anchorCache = new Map<string, Map<string, string>>();
 
   constructor(crate: RustdocCrate, options: GeneratorOptions) {
     this.crate = crate;
@@ -714,6 +748,56 @@ export class RustdocGenerator {
   }
 
   /**
+   * Provide the page index of sibling crates (see {@link pageIndex}). Call
+   * before {@link generate}; workspace mode builds every member's index
+   * first, then renders each member with the union.
+   */
+  setExternalPages(pages: Map<string, string>): void {
+    this.options.externalPages = pages;
+  }
+
+  /**
+   * URL of a file in the source repository, or undefined when no
+   * `sourceUrlBase` is configured or the path is outside the repository.
+   */
+  private sourceUrl(file: string, lines?: [number, number]): string | undefined {
+    if (!this.options.sourceUrlBase) return undefined;
+    if (file.startsWith("/") || /^[A-Za-z]:[\\/]/.test(file) || file.startsWith(".."))
+      return undefined;
+    const base = this.options.sourceUrlBase.replace(/\/+$/, "");
+    const path = file.split("\\").join("/").replace(/^\.\//, "");
+    const prefix = this.options.sourceRef ? `${base}/blob/${this.options.sourceRef}` : base;
+    const anchor = lines ? `#L${lines[0]}${lines[1] !== lines[0] ? `-L${lines[1]}` : ""}` : "";
+    return `${prefix}/${path}${anchor}`;
+  }
+
+  /**
+   * Resolve a relative link in a docstring (`../../docs/spec.md`) against
+   * the directory of the item's source file. Returns the repository URL when
+   * a source base is configured, null otherwise (such links 404 on a docs
+   * site), and undefined for links that are not repository-relative.
+   */
+  private resolveRelativeDocLink(item: Item, dest: string): string | null | undefined {
+    if (
+      !dest ||
+      /^[a-z][a-z0-9+.-]*:/i.test(dest) ||
+      dest.startsWith("/") ||
+      dest.startsWith("#")
+    ) {
+      return undefined;
+    }
+    if (!/^\.{1,2}\/|\.(md|rs|toml|json|txt|ya?ml|html?)(#.*)?$|\/$/.test(dest)) return undefined;
+    const span = item.span;
+    if (!span || span.filename.startsWith("/") || dest.endsWith(".html")) return null;
+    const [pathPart, anchor] = dest.split("#", 2);
+    const dir = span.filename.split("\\").join("/").split("/").slice(0, -1).join("/");
+    const resolved = posix.normalize(posix.join(dir, pathPart));
+    const url = this.sourceUrl(resolved);
+    if (!url) return null;
+    return anchor ? `${url}#${anchor}` : url;
+  }
+
+  /**
    * Resolve the public API surface into a tree of {@link ModuleNode}s.
    *
    * Phase A places every item that is *directly* reachable: public items of
@@ -771,6 +855,7 @@ export class RustdocGenerator {
     }
 
     this.plan = root;
+    this.buildMemberUrls(root);
     return root;
   }
 
@@ -935,7 +1020,8 @@ export class RustdocGenerator {
         name: `${u.source}::*`,
         source: u.source,
         isGlob: true,
-        href: u.id !== undefined && u.id !== null ? this.resolveIdUrl(u.id) : null,
+        href: null,
+        targetId: u.id ?? undefined,
       });
       return;
     }
@@ -945,7 +1031,8 @@ export class RustdocGenerator {
         name,
         source: u.source,
         isGlob: false,
-        href: u.id !== undefined && u.id !== null ? this.resolveIdUrl(u.id) : null,
+        href: null,
+        targetId: u.id ?? undefined,
       });
       return;
     }
@@ -971,7 +1058,7 @@ export class RustdocGenerator {
         source,
         isGlob: false,
         href: existing,
-        docs: firstLine(target.docs),
+        docs: firstLine(this.docsFor(target, 0)),
         kind,
       });
       return;
@@ -993,13 +1080,149 @@ export class RustdocGenerator {
    */
   private resolveIdUrl(id: Id): string | null {
     const key = String(id);
-    const local = this.itemUrls.get(key);
+    const local = this.itemUrls.get(key) ?? this.memberUrls.get(key);
     if (local) return local;
     const summary = this.crate.paths[key] as ItemSummary | undefined;
     if (!summary || summary.crate_id === 0) return null;
     const sibling = this.options.externalPages?.get(summary.path.join("::"));
     if (sibling) return sibling;
     return externalDocUrl(summary, this.crate.external_crates[String(summary.crate_id)]);
+  }
+
+  /**
+   * A docstring ready for MDX: intra-doc links resolved through
+   * `item.links`, headings pushed down `demote` levels so they nest under
+   * the page heading that introduces the item.
+   */
+  private docsFor(item: Item, demote: number): string {
+    if (!item.docs) return "";
+    const cacheKey = `${String(item.id)}:${demote}`;
+    const cached = this.docsCache.get(cacheKey);
+    if (cached !== undefined) return cached;
+    const links = item.links;
+    const resolved = rewriteDocLinks(item.docs, (key) => {
+      const raw = key.replace(/&lt;/g, "<").replace(/&gt;/g, ">");
+      const id = links[key] ?? links[raw];
+      if (id === undefined) return this.resolveRelativeDocLink(item, key);
+      return this.resolveIdUrl(id);
+    });
+    const out = demoteHeadings(resolved, demote);
+    this.docsCache.set(cacheKey, out);
+    return out;
+  }
+
+  /** Append an item's docs (preceded by a blank line) when it has any. */
+  private pushDocs(sections: string[], item: Item, demote: number): void {
+    const docs = this.docsFor(item, demote);
+    if (docs) {
+      sections.push("");
+      sections.push(docs);
+    }
+  }
+
+  /** `` #### `name` [#anchor] `` — a member heading with a stable id. */
+  private memberHeading(label: string, anchor: string | undefined): string {
+    return `#### ${inlineCode(label)}${anchor ? ` [#${anchor}]` : ""}`;
+  }
+
+  /**
+   * Stable heading ids for the members rendered on an item's page:
+   * `method.<name>` for methods (inherent ones, trait-impl ones that are
+   * rendered because they are documented, and trait items),
+   * `associatedtype.<name>` / `associatedconstant.<name>`, and
+   * `variant.<Name>` for enum variants. Struct and union fields map to the
+   * page's `fields` heading. Duplicates get a numeric suffix.
+   */
+  private anchorsFor(item: Item): Map<string, string> {
+    const key = String(item.id);
+    const cached = this.anchorCache.get(key);
+    if (cached) return cached;
+    const anchors = new Map<string, string>();
+    const used = new Set<string>();
+    const claim = (id: Id, base: string): void => {
+      if (anchors.has(String(id))) return;
+      let anchor = base;
+      for (let n = 2; used.has(anchor); n++) anchor = `${base}-${n}`;
+      used.add(anchor);
+      anchors.set(String(id), anchor);
+    };
+    const member = (child: Item): void => {
+      if (!child.name) return;
+      if ("function" in child.inner) claim(child.id, `method.${child.name}`);
+      else if ("assoc_type" in child.inner) claim(child.id, `associatedtype.${child.name}`);
+      else if ("assoc_const" in child.inner) claim(child.id, `associatedconstant.${child.name}`);
+    };
+
+    if ("enum" in item.inner) {
+      for (const vid of item.inner.enum.variants) {
+        const v = this.getItem(vid);
+        if (v?.name) claim(vid, `variant.${v.name}`);
+      }
+    }
+    if ("trait" in item.inner) {
+      for (const id of item.inner.trait.items) {
+        const child = this.getItem(id);
+        if (child) member(child);
+      }
+    }
+    for (const impl of this.getImplementations(item)) {
+      if (!("impl" in impl.inner)) continue;
+      const isTrait = Boolean(impl.inner.impl.trait);
+      for (const id of impl.inner.impl.items) {
+        const child = this.getItem(id);
+        if (!child) continue;
+        if (isTrait && !child.docs) continue; // undocumented trait-impl members are not rendered
+        member(child);
+      }
+    }
+    this.anchorCache.set(key, anchors);
+    return anchors;
+  }
+
+  /**
+   * URLs of members (methods, variants, fields, associated items) of every
+   * item that has a canonical page, so intra-doc links like
+   * `` [`Foo::bar`] `` or `` [`Self::Variant`] `` land on the right heading.
+   */
+  private buildMemberUrls(node: ModuleNode): void {
+    for (const page of node.pages) {
+      if (this.itemUrls.get(String(page.item.id)) !== page.url) continue; // not canonical
+      const inKindPage = this.options.groupBy === "kind";
+      for (const [id, anchor] of this.anchorsFor(page.item)) {
+        if (!this.memberUrls.has(id)) {
+          this.memberUrls.set(id, inKindPage ? page.url : `${page.url}#${anchor}`);
+        }
+      }
+      const inner = page.item.inner;
+      const fieldIds: Id[] = [];
+      if ("struct" in inner && isPlainStruct(inner.struct.kind)) {
+        fieldIds.push(...inner.struct.kind.plain.fields);
+      } else if ("union" in inner) {
+        fieldIds.push(...inner.union.fields);
+      }
+      for (const id of fieldIds) {
+        if (!this.memberUrls.has(String(id))) {
+          this.memberUrls.set(String(id), inKindPage ? page.url : `${page.url}#fields`);
+        }
+      }
+      if ("enum" in inner) {
+        for (const vid of inner.enum.variants) {
+          const variantUrl = this.memberUrls.get(String(vid));
+          const v = this.getItem(vid);
+          if (!variantUrl || !v || !("variant" in v.inner)) continue;
+          const vk = v.inner.variant.kind;
+          const ids = isTupleVariant(vk)
+            ? vk.tuple.filter((x): x is Id => x !== null)
+            : isStructVariant(vk)
+              ? vk.struct.fields
+              : [];
+          for (const fid of ids) {
+            if (!this.memberUrls.has(String(fid))) this.memberUrls.set(String(fid), variantUrl);
+          }
+        }
+      }
+    }
+    node.submodules.forEach((sub) => this.buildMemberUrls(sub));
   }
 
   /** Absolute URL of a module node's index page. */
@@ -1046,8 +1269,9 @@ export class RustdocGenerator {
     sections.push(this.formatFrontmatter(frontmatter));
     sections.push("");
 
-    if (node.item.docs) {
-      sections.push(node.item.docs);
+    const docs = this.docsFor(node.item, 1);
+    if (docs) {
+      sections.push(docs);
       sections.push("");
     }
 
@@ -1055,7 +1279,7 @@ export class RustdocGenerator {
       sections.push("## Modules");
       sections.push("");
       for (const sub of [...node.submodules].sort((a, b) => a.name.localeCompare(b.name))) {
-        sections.push(this.indexLine(sub.name, this.nodeUrl(sub), sub.item.docs));
+        sections.push(this.indexLine(sub.name, this.nodeUrl(sub), sub.item));
       }
       sections.push("");
     }
@@ -1068,7 +1292,7 @@ export class RustdocGenerator {
       sections.push(`## ${kindToTitle(kind)}`);
       sections.push("");
       for (const page of pages) {
-        sections.push(this.indexLine(displayName(page.name, kind), page.url, page.item.docs));
+        sections.push(this.indexLine(displayName(page.name, kind), page.url, page.item));
       }
       sections.push("");
     }
@@ -1078,7 +1302,8 @@ export class RustdocGenerator {
       sections.push("");
       for (const re of [...node.reexports].sort((a, b) => a.name.localeCompare(b.name))) {
         const label = `\`${re.name}\``;
-        const link = re.href ? `[${label}](${re.href})` : label;
+        const href = re.href ?? (re.targetId !== undefined ? this.resolveIdUrl(re.targetId) : null);
+        const link = href ? `[${label}](${href})` : label;
         const from =
           re.isGlob || re.source.endsWith(`::${re.name}`) || re.source === re.name
             ? ""
@@ -1094,8 +1319,8 @@ export class RustdocGenerator {
   }
 
   /** One `- [`name`](url) - first doc line` bullet for an index page. */
-  private indexLine(name: string, url: string, docs: string | undefined): string {
-    const desc = firstLine(docs);
+  private indexLine(name: string, url: string, item: Item): string {
+    const desc = firstLine(this.docsFor(item, 0));
     return `- [\`${name}\`](${url})${desc ? ` - ${desc}` : ""}`;
   }
 
@@ -1222,15 +1447,18 @@ export class RustdocGenerator {
 
     if (this.options.useTabs && inherentImpls.length > 0 && traitImpls.length > 0) {
       const tabContents = new Map<string, string>();
-      tabContents.set("Methods", inherentImpls.map((impl) => this.renderImpl(impl)).join("\n\n"));
+      tabContents.set(
+        "Methods",
+        inherentImpls.map((impl) => this.renderImpl(impl, page.item)).join("\n\n")
+      );
       tabContents.set(
         "Trait Implementations",
-        traitImpls.map((impl) => this.renderImpl(impl)).join("\n\n")
+        traitImpls.map((impl) => this.renderImpl(impl, page.item)).join("\n\n")
       );
       sections.push(renderTabs(["Methods", "Trait Implementations"], tabContents));
     } else {
       for (const impl of impls) {
-        sections.push(this.renderImpl(impl));
+        sections.push(this.renderImpl(impl, page.item));
         sections.push("");
       }
     }
@@ -1354,14 +1582,15 @@ export class RustdocGenerator {
       const refKind = getItemKind(refItem.inner);
       if (refKind === "unknown") continue;
 
-      // Build path to referenced item
-      const path = this.getPath(refId);
-      const href = path ? `./${path.slice(1).join("/")}` : `./${refItem.name}`;
+      // Link to the referenced item's canonical page; skip items that have
+      // none (private, or only reachable through an impl).
+      const href = this.itemUrls.get(String(refId));
+      if (!href) continue;
 
       cards.push({
         title: refItem.name,
         href,
-        description: refItem.docs?.split("\n")[0] ?? `A ${refKind}`,
+        description: summaryLine(refItem.docs) || `A ${refKind}`,
         icon: kindToIcon(refKind),
       });
     }
@@ -1532,7 +1761,7 @@ export class RustdocGenerator {
     // Safety callout for unsafe items
     const isUnsafe = this.isUnsafeItem(item);
     if (isUnsafe) {
-      sections.push(renderSafetyCallout(item.docs));
+      sections.push(renderSafetyCallout(this.docsFor(item, 0)));
       sections.push("");
     }
 
@@ -1565,21 +1794,18 @@ export class RustdocGenerator {
         break;
       default:
         sections.push(`## ${name}`);
-        if (item.docs) {
-          sections.push("");
-          sections.push(item.docs);
-        }
+        this.pushDocs(sections, item, 2);
     }
 
     // Add panics callout if docs contain # Panics section (for functions)
     if (kind === "function") {
-      const panicsCallout = renderPanicsCallout(item.docs);
+      const panicsCallout = renderPanicsCallout(this.docsFor(item, 0));
       if (panicsCallout) {
         sections.push("");
         sections.push(panicsCallout);
       }
 
-      const errorsCallout = renderErrorsCallout(item.docs);
+      const errorsCallout = renderErrorsCallout(this.docsFor(item, 0));
       if (errorsCallout) {
         sections.push("");
         sections.push(errorsCallout);
@@ -1664,10 +1890,7 @@ export class RustdocGenerator {
     sections.push(formatFunctionSignature(name, fn));
     sections.push("```");
 
-    if (item.docs) {
-      sections.push("");
-      sections.push(item.docs);
-    }
+    this.pushDocs(sections, item, 2);
 
     return sections.join("\n");
   }
@@ -1707,10 +1930,7 @@ export class RustdocGenerator {
     sections.push(formatStructSignature(name, struct));
     sections.push("```");
 
-    if (item.docs) {
-      sections.push("");
-      sections.push(item.docs);
-    }
+    this.pushDocs(sections, item, 2);
 
     // Render fields
     if (isPlainStruct(struct.kind)) {
@@ -1762,10 +1982,7 @@ export class RustdocGenerator {
     sections.push(formatUnionSignature(name, union));
     sections.push("```");
 
-    if (item.docs) {
-      sections.push("");
-      sections.push(item.docs);
-    }
+    this.pushDocs(sections, item, 2);
 
     // Render fields
     if (union.fields.length > 0) {
@@ -1825,10 +2042,7 @@ export class RustdocGenerator {
     sections.push(formatEnumSignature(name, enumDef));
     sections.push("```");
 
-    if (item.docs) {
-      sections.push("");
-      sections.push(item.docs);
-    }
+    this.pushDocs(sections, item, 2);
 
     // Render variants
     if (enumDef.variants.length > 0) {
@@ -1844,12 +2058,11 @@ export class RustdocGenerator {
 
         // Render variant with its fields
         const variantSig = this.formatVariantSignature(variantName, variant);
-        sections.push(`#### \`${variantSig}\``);
+        sections.push(
+          this.memberHeading(variantSig, this.anchorsFor(item).get(String(variantItem.id)))
+        );
 
-        if (variantItem.docs) {
-          sections.push("");
-          sections.push(variantItem.docs);
-        }
+        this.pushDocs(sections, variantItem, 4);
 
         // Render struct-style variant fields
         if (isStructVariant(variant.kind)) {
@@ -1980,10 +2193,7 @@ export class RustdocGenerator {
     sections.push(formatTraitSignature(name, trait));
     sections.push("```");
 
-    if (item.docs) {
-      sections.push("");
-      sections.push(item.docs);
-    }
+    this.pushDocs(sections, item, 2);
 
     // Render required methods
     const methods = trait.items
@@ -1994,15 +2204,15 @@ export class RustdocGenerator {
       sections.push("");
       sections.push("### Required Methods");
       sections.push("");
+      const anchors = this.anchorsFor(item);
       for (const method of methods) {
         if (!("function" in method.inner)) continue;
+        sections.push(this.memberHeading(method.name ?? "", anchors.get(String(method.id))));
+        sections.push("");
         sections.push("```rust");
         sections.push(formatFunctionSignature(method.name ?? "", method.inner.function));
         sections.push("```");
-        if (method.docs) {
-          sections.push("");
-          sections.push(method.docs);
-        }
+        this.pushDocs(sections, method, 4);
         sections.push("");
       }
     }
@@ -2038,10 +2248,7 @@ export class RustdocGenerator {
     sections.push(`type ${name}${formatGenerics(alias.generics)} = ${formatType(alias.type)};`);
     sections.push("```");
 
-    if (item.docs) {
-      sections.push("");
-      sections.push(item.docs);
-    }
+    this.pushDocs(sections, item, 2);
 
     return sections.join("\n");
   }
@@ -2097,10 +2304,7 @@ export class RustdocGenerator {
       sections.push("```");
     }
 
-    if (item.docs) {
-      sections.push("");
-      sections.push(item.docs);
-    }
+    this.pushDocs(sections, item, 2);
 
     return sections.join("\n");
   }
@@ -2135,10 +2339,7 @@ export class RustdocGenerator {
       sections.push("```");
     }
 
-    if (item.docs) {
-      sections.push("");
-      sections.push(item.docs);
-    }
+    this.pushDocs(sections, item, 2);
 
     return sections.join("\n");
   }
@@ -2165,7 +2366,7 @@ export class RustdocGenerator {
    * @param impl - The impl item to render (must have 'impl' in inner)
    * @returns MDX content string for the implementation block
    */
-  private renderImpl(impl: Item): string {
+  private renderImpl(impl: Item, owner?: Item): string {
     if (!("impl" in impl.inner)) return "";
     const implDef = impl.inner.impl;
     const sections: string[] = [];
@@ -2198,19 +2399,21 @@ export class RustdocGenerator {
     sections.push(`### \`${header}\``);
     sections.push("");
 
-    // Render impl methods
+    // Render impl methods, each under its own anchored heading so it shows
+    // in the table of contents and intra-doc links can target it.
+    const anchors = owner ? this.anchorsFor(owner) : new Map<string, string>();
     for (const methodId of implDef.items) {
       const method = this.getItem(methodId);
       if (!method || !("function" in method.inner)) continue;
+      const anchor = anchors.get(String(method.id));
+      if (implDef.trait && anchor === undefined) continue;
 
+      sections.push(this.memberHeading(method.name ?? "", anchor));
+      sections.push("");
       sections.push("```rust");
       sections.push(formatFunctionSignature(method.name ?? "", method.inner.function));
       sections.push("```");
-
-      if (method.docs) {
-        sections.push("");
-        sections.push(method.docs);
-      }
+      this.pushDocs(sections, method, 4);
       sections.push("");
     }
 
@@ -2331,7 +2534,7 @@ export class RustdocGenerator {
    * `Option<String>` or `Vec<[u8; 32]>` would be parsed by MDX as JSX.
    */
   private fieldLine(name: string, field: Item): string {
-    const doc = firstLine(field.docs);
+    const doc = firstLine(this.docsFor(field, 0));
     return `- ${inlineCode(name)}: ${inlineCode(this.formatFieldType(field))}${doc ? ` - ${doc}` : ""}`;
   }
 
@@ -2368,7 +2571,8 @@ function defaultFrontmatter(item: Item, path: string[]): Record<string, unknown>
   const icon = kind === "unknown" ? "FileText" : kindToIcon(kind);
   return {
     title: path[path.length - 1] ?? item.name ?? "API",
-    description: firstLine(item.docs) || `Documentation for ${path[path.length - 1] ?? item.name}`,
+    description:
+      summaryLine(item.docs) || `Documentation for ${path[path.length - 1] ?? item.name}`,
     icon,
   };
 }

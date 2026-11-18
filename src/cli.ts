@@ -91,6 +91,10 @@ export interface CliArgs {
    * `$CARGO_TARGET_DIR`, then `<workspace>/target` (or `./target`).
    */
   targetDir?: string;
+  /** Source repository URL for "Source" links (see GeneratorOptions.sourceUrlBase). */
+  sourceUrlBase?: string;
+  /** Git ref for source links (see GeneratorOptions.sourceRef). */
+  sourceRef?: string;
   output: string;
   baseUrl: string;
   groupBy: "module" | "kind" | "flat";
@@ -228,6 +232,12 @@ export function parseArgs(argv: string[]): CliArgs {
       case "--target-dir":
         result.targetDir = requireValue(arg, argv[++i], "a directory argument");
         break;
+      case "--source-url-base":
+        result.sourceUrlBase = requireValue(arg, argv[++i], "a URL argument");
+        break;
+      case "--source-ref":
+        result.sourceRef = requireValue(arg, argv[++i], "a git ref argument");
+        break;
       case "-w":
       case "--workspace": {
         // Accept an optional directory argument. If the next token is another
@@ -270,6 +280,10 @@ OPTIONS:
                           <workspace>/target)
   -o, --output <dir>      Output directory (default: content/docs/api)
   -b, --base-url <url>    Base URL for generated docs (default: /docs/api)
+  --source-url-base <url> Repository URL for "Source" links and for
+                          repository-relative links in docstrings, e.g.
+                          https://github.com/org/repo
+  --source-ref <ref>      Git ref for source links (adds /blob/<ref>/)
   -g, --group-by <mode>   Group items by: module, kind, or flat (default: module)
   --no-index              Don't generate index pages for modules
   --no-tabs               Don't use Tabs component for implementations
@@ -482,6 +496,8 @@ async function runWorkspace(
   const outputDir = resolve(args.output);
   const allFiles: { path: string; content: string }[] = [];
   const generated: WorkspaceMember[] = [];
+  const generators: { generator: RustdocGenerator; member: WorkspaceMember; rootName: string }[] =
+    [];
   const skipped: { name: string; reason: string }[] = [];
 
   for (const member of ws.members) {
@@ -553,14 +569,28 @@ async function runWorkspace(
       groupBy: args.groupBy,
       useTabs: !args.noTabs,
       useCards: !args.noCards,
+      sourceUrlBase: args.sourceUrlBase,
+      sourceRef: args.sourceRef,
+      packageName: member.name,
     };
-    const generator = new RustdocGenerator(crate, options);
-    const files = generator.generate();
-    allFiles.push(...files);
     // Record the crate's own root name (underscored, matching the output
     // directory the generator emits) rather than the Cargo package name,
     // so the top-level meta.json references the actual on-disk dirs.
     const rootName = crate.index[crate.root]?.name ?? member.name;
+    generators.push({ generator: new RustdocGenerator(crate, options), member, rootName });
+  }
+
+  // Two phases so cross-crate links stay on the site: every member's page
+  // index first, then each member renders against the union of them.
+  const sharedPages = new Map<string, string>();
+  for (const { generator } of generators) {
+    for (const [path, url] of generator.pageIndex()) {
+      if (!sharedPages.has(path)) sharedPages.set(path, url);
+    }
+  }
+  for (const { generator, member, rootName } of generators) {
+    generator.setExternalPages(sharedPages);
+    allFiles.push(...generator.generate());
     generated.push({ ...member, name: rootName });
   }
 
@@ -587,7 +617,7 @@ async function runWorkspace(
   });
   allFiles.push({
     path: "index.mdx",
-    content: renderWorkspaceIndex(workspaceName, generated),
+    content: renderWorkspaceIndex(workspaceName, generated, args.baseUrl),
   });
 
   for (const s of skipped) {
@@ -821,6 +851,8 @@ export async function run(argv: string[], streams: CliStreams = defaultStreams):
     groupBy: args.groupBy,
     useTabs: !args.noTabs,
     useCards: !args.noCards,
+    sourceUrlBase: args.sourceUrlBase,
+    sourceRef: args.sourceRef,
   };
 
   const generator = new RustdocGenerator(crate, options);

@@ -248,11 +248,16 @@ function escapeCode(name: string): string {
 }
 
 /**
- * Render the top-level workspace landing page. The frontmatter is written
+ * Render the top-level workspace landing page. Links to the member crates
+ * are absolute (`baseUrl` + crate directory). The frontmatter is written
  * by the `yaml` package, so workspace/crate names containing `"`, `:`,
  * newlines, or other YAML metacharacters can't break parsing.
  */
-export function renderWorkspaceIndex(workspaceName: string, members: WorkspaceMember[]): string {
+export function renderWorkspaceIndex(
+  workspaceName: string,
+  members: WorkspaceMember[],
+  baseUrl = "/docs/api"
+): string {
   const frontmatter = stringifyYaml(
     {
       title: workspaceName,
@@ -271,8 +276,9 @@ export function renderWorkspaceIndex(workspaceName: string, members: WorkspaceMe
     `This workspace contains **${members.length}** crate${members.length === 1 ? "" : "s"}:`,
     "",
   ];
+  const base = baseUrl.replace(/\/+$/, "");
   for (const m of members) {
-    lines.push(`- [\`${escapeCode(m.name)}\`](./${encodeURIComponent(m.name)})`);
+    lines.push(`- [\`${escapeCode(m.name)}\`](${base}/${encodeURIComponent(m.name)})`);
   }
   lines.push("");
   return lines.join("\n");

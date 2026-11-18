@@ -177,6 +177,9 @@ impl Shape for shapes::Circle {
 }
 
 /// Converts things; takes a closure.
+///
+/// Background: [the spec](../docs/spec.md) and the
+/// [usage notes](../README.md#usage).
 pub fn apply<F>(f: F, value: impl AsRef<str>) -> usize
 where
     F: Fn(&str) -> usize,
